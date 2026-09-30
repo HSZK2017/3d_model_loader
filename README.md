@@ -1,27 +1,38 @@
 # Model3D Loader API
 
-A Minecraft **1.20.1 Forge** mod that loads common interchange 3D model formats at runtime,
-plays the animation data those files carry, and draws the result on ordinary entities.
+A Minecraft **1.20.1 Forge** mod that loads common interchange 3D model formats at runtime, plays the
+animation data those files carry, and draws the result on ordinary entities.
 
-It is an **API mod**. The deliverable is not "an aircraft in Minecraft" - it is a documented,
-testable surface that another mod can call to attach a `.glb` or `.obj` to its own entity.
+It is an **API mod**, and this repository is **the loader only**: it ships no entity, no command, no
+model files and no test fixture. The deliverable is a documented, testable surface that another mod
+calls to attach a `.glb` or `.obj` to its own entity.
 
-> ### Where the test program went
-> This repository ships the **loader only**: no entity, no command, no model files and no test
-> fixture. The test entity, `/testmodel` and the unattended acceptance runs live in the companion
-> project in `../model3d_testmod`, which consumes this API from outside it - its own Gradle build,
-> its own mod id, its own jar, and no access to anything here that is not public.
->
-> That is deliberate, and it is the API's own integration test: if the test mod compiles and its
-> acceptance run passes, the public surface is enough to load, animate and draw a model. The
-> sections below that describe `/testmodel` still describe real behaviour, now installed by that
-> companion mod - and `ModelCarrier` (in `com.model3d.loader.api`) is the interface it implements.
->
-> One implementation, two calls: implement `ModelCarrier` on your entity, and render it with
-> `ClientModelManager.get().instanceFor(entity)` and
-> `ClientModelManager.get().vanillaRenderer().draw(...)`. Everything else - parsing, the scene and
-> animation model, resource resolution, the model cache, the CPU-skinning GL path, the shader pair,
-> the network sync - is this mod's.
+## This mod's responsibility, in one line
+
+Given a model name, find the file, parse it, keep one copy of the result, and draw it for every
+entity that carries it - on the client, through Minecraft's own vertex pipeline, with skinning and
+animation on the CPU.
+
+What that means concretely:
+
+| In this repository | Not in this repository |
+|---|---|
+| glTF/GLB and OBJ/MTL parsers, the JSON reader, the matrix/vector maths | Any entity, any command |
+| The scene and animation model, the animation runtime | Any model asset, any generated fixture |
+| Model resolution: `config/3dmodels/`, `data/`, `assets/`, the classpath index | The acceptance runs, the diagnostics tooling |
+| The client render path: CPU skinning, one streamed VBO per model, the shader pair | A worked example of *using* the API |
+| The sync contract (`ModelCarrier`, `ModelSync`, the packet) | |
+| The public API surface and its offline verification tools | |
+
+The worked example is a **separate mod**: [Model3D Loader Test Mod](../model3d_testmod). It owns the
+test entity, `/testmodel`, and the unattended acceptance runs, and it is what keeps this mod honest -
+it consumes nothing but the public surface, so if it builds and runs, the API is enough to load,
+animate and draw a model from outside.
+
+Implementing the API is one interface and two calls: implement `ModelCarrier` on your entity, then
+render with `ClientModelManager.get().instanceFor(entity)` and
+`ClientModelManager.get().vanillaRenderer().draw(...)`. See
+[Using the API from another mod](#using-the-api-from-another-mod) for the whole recipe.
 
 ---
 
@@ -48,64 +59,16 @@ either.
 
 ---
 
-## Quick start (in game)
+## Seeing a model in game
 
-The mod registers one entity. **It can only be created by its own command** 鈥?it is registered
-`noSummon()`, so vanilla `/summon`, spawn eggs and mob spawners cannot produce it. That is
-deliberate: it is a test fixture, not a gameplay entity.
+This mod cannot spawn one: it has no entity and no command, deliberately. Install it together with a
+mod that has a carrier and use that mod's command - for instance the companion test mod, whose
+[README](../model3d_testmod/README.md) documents `/testmodel loader`, `/testmodel look`,
+`/testmodel reload` and `/testmodel diag`, and whose client acceptance run is the end-to-end check of
+this API.
 
-```
-/testmodel loader <model name> <x> <y> <z>
-/testmodel look <model name> [distance]
-```
-
-With no model attached, the entity renders as a **vanilla pig**. That is the fallback *marker*:
-a pig at the spawn coordinates makes the entity's position and orientation readable at a glance,
-so "the model failed to load" is distinguishable from "the entity never spawned". An invisible
-entity would be indistinguishable from a crash.
-
-Examples:
-
-```
-/testmodel loader su30 100 70 100                   absolute coordinates
-/testmodel loader su30 ~ ~ ~                        at your own position
-/testmodel loader su30 ~5 ~ ~-2                     with offsets
-/testmodel loader model3d:animated_test 100 70 100  namespace-qualified name
-/testmodel loader somepack:sub/dir/model ^ ^ ^2     another namespace, local coordinates
-/testmodel look su30                                in front of you, 6 blocks out
-```
-
-The fastest path from nothing to something on screen: copy any `.glb` into `config/3dmodels/`, then
-`/testmodel reload` and `/testmodel loader <the file name without its extension> ~ ~ ~`.
-
-Syntax notes, each measured rather than assumed. `gradlew commandParseCheck` runs the real command
-node tree against the documented forms - unqualified and namespace-qualified names, `~` and `^`
-coordinates, the quoted form it rejects, and `diag` - so the documented grammar cannot drift from
-the registered one:
-
-- **Coordinates accept the full vanilla syntax**: absolute (`100 70 100`), relative (`~`, `~5`,
-  `~-2`) and local/look-relative (`^`, `^2`). They are parsed as one `Vec3` argument, exactly like
-  `/tp` and `/summon`.
-- **Do not quote the model name.** It is parsed by vanilla's `ResourceLocationArgument`, whose
-  reader consumes allowed characters and stops at `"`, so quoting a name makes it *invalid* rather
-  than safer. Same as `/give minecraft:diamond`.
-- An unqualified name (`su30`) resolves in this mod's namespace; a qualified one
-  (`somepack:thing`) is used as written.
-
-- `/testmodel` on its own lists every model the server can see.
-- `/testmodel reload` rescans the model folders immediately instead of waiting for the automatic
-  poll. The poll is what makes a dropped file appear on its own; this is for wanting confirmation now.
-- `/testmodel look <model> [distance]` spawns the model along **your own view vector** instead of at
-  typed coordinates, so it cannot land off-screen: the distance defaults to 6 blocks and accepts 2
-  to 64. It needs a player as the command source, because the look vector is the player's.
-- The model name tab-completes.
-- **Right-click** the entity to cycle through the attached model's animations 鈥?the way to check
-  that every animation in a file actually plays, without editing anything.
-- `/testmodel diag <model>` prints the resolution state step by step when something cannot be found.
-
-The model is resolved **and parsed on the server** before the entity is spawned. A typo, or a file
-that exists but is malformed, produces an error naming the model and the reason, and no entity
-appears 鈥?instead of an entity appearing and the client failing silently somewhere else.
+The rest of this document is about the loader: what it reads, where it looks, what it does with the
+result, and how to call it from your own mod.
 
 ---
 
@@ -147,13 +110,16 @@ on the next frame).
 The layout is deliberately forgiving. All of these work:
 
 ```
-config/3dmodels/su30.glb                 ->  /testmodel loader su30 ~ ~ ~
-config/3dmodels/My Plane.glb             ->  /testmodel loader my_plane ~ ~ ~
-config/3dmodels/su30/model.glb           ->  /testmodel loader su30 ~ ~ ~
+config/3dmodels/su30.glb                 ->  model name "su30"
+config/3dmodels/My Plane.glb             ->  model name "my_plane"
+config/3dmodels/su30/model.glb           ->  model name "su30"
 config/3dmodels/su30/model.json          ->  optional settings for that model
 config/3dmodels/su30/textures/*.png      ->  textures beside the model
-config/3dmodels/jets/su30.glb            ->  /testmodel loader jets ~ ~ ~
+config/3dmodels/jets/su30.glb            ->  model name "jets"
 ```
+
+The model name is what a mod built on this loader passes to it - a spawn command's argument, an
+entity's synced model id, a `<namespace>:<name>` in a pack.
 
 The rule is one sentence: **a folder containing a model file is one model, named after the folder;
 a model file that no folder claims is one model, named after the file.** Everything under a model
@@ -189,8 +155,9 @@ is untrusted input.
 `ResourceManager` on a dev server: `listResources("loot_tables")` = 1091 entries,
 `listResources("recipes")` = 1174 鈥?and `listResources("models")` (the `assets` tree) = **0**.
 A model stored under `assets/` therefore loads on the client and is invisible to the server,
-which breaks the one property that justifies server-side resolution: `/testmodel loader <name>`
-validating a name against the real file set instead of leaving the client to fail silently.
+which breaks the one property that justifies server-side resolution: a mod's spawn command
+validating a name against the real file set, on the server, instead of leaving the client to fail
+silently - or worse, to render the fallback.
 
 ### `files.txt` (generated)
 
@@ -468,17 +435,17 @@ Most of this mod can be checked without a display, and it is worth knowing which
 $env:JAVA_HOME="E:\Program Files\Java\jdk-17"
 .\gradlew.bat build                                  # compiles, runs the test suite, builds the jar
 .\gradlew.bat test                                   # parsers + animation, plain JUnit, no game
-.\gradlew.bat checkExtras                            # all four verification tasks below
+.\gradlew.bat checkExtras                            # the three verification tasks below
 .\gradlew.bat deployMod                              # copy the jar into the game's mods/, hash-verified
 .\gradlew.bat modelInspect --args="path/to/model.glb full"
 ```
 
 This repository ships **no model assets** - it is the loader, not the cargo. There is no `models/`
-directory in a fresh clone: the build does not need one (`linkSampleModels` prints a line and skips
-when it is absent, and the corpus tests skip unless `-Dmodel3d.corpus` points at a directory), and
-inspect/probe take whatever path you give them. For local testing, drop your own files into a
-`models/` folder at the repository root: it is in `.gitignore`, so they stay out of the repository
-and out of any pull request.
+directory in a fresh clone: the build does not need one (the corpus tests skip unless
+`-Dmodel3d.corpus` points at a directory), and inspect/probe take whatever path you give them. For
+local testing, drop your own files into a `models/` folder at the repository root: it is in
+`.gitignore`, so they stay out of the repository and out of any pull request. The companion test mod
+has a task that exposes such a folder to its dev runs as `model3d:su30`.
 
 `deployMod` copies the built jar into a Minecraft instance and **verifies the copy by re-hashing what
 landed**, defaulting to this machine's instance:
@@ -489,9 +456,10 @@ like the fix not working. That happened during development: a crash report was i
 bug when the deployed jar was half an hour older than the fix. The task prints the source and target
 hashes so "did my change get there" is a fact rather than an assumption.
 
-`checkExtras` covers the four things a compile and a test suite cannot: the shaders, the mesh
-upload, the command grammar, and the event-bus wiring. `build` deliberately does not depend on it 鈥?they need a GL driver and a full Minecraft classpath, and a build that failed on a machine lacking
-either would be worse than one that leaves them opt-in.
+`checkExtras` covers the three things a compile and a test suite cannot: the shaders, the mesh upload
+and the event-bus wiring. `build` deliberately does not depend on it - they need a GL driver and a
+full Minecraft classpath, and a build that failed on a machine lacking either would be worse than one
+that leaves them opt-in.
 
 `shaderCheck` compiles the live shader pair the draw path loads
 (`assets/model3d/shaders/model_cpu.vsh` and `model_cpu.fsh`) against a real OpenGL driver in an
@@ -519,11 +487,10 @@ pinned by `CpuVertexWriterCapacityTest`, which carries the same kind of control:
 while the current `indexCount()` sizing holds every vertex the fill loop writes - so the fix cannot
 be "improved" into a guess.
 
-`commandParseCheck` runs the real command node tree against the loader forms this README promises -
-unqualified and namespace-qualified names, `~`/`^` coordinates, and the quoted form it deliberately
-rejects. It exists because `/testmodel loader model3d:x 0 70 0`
-**shipped broken** 鈥?Brigadier's `StringArgumentType.string()` stops reading at a colon, so every
-namespace-qualified name failed while unqualified names worked, and `~ ~ ~` was rejected too.
+The command grammar check is **not here**: this mod has no commands to check. It lives with the mod
+that owns the tree (the companion test mod's `commandParseCheck`), and it still pins the failure that
+put it there - a namespace-qualified model name used to fail because Brigadier's
+`StringArgumentType.string()` stops reading at a colon, while unqualified names worked.
 
 `eventBusCheck` verifies that every `@Mod.EventBusSubscriber` subscribes to events its declared bus
 actually carries. This is the check that would have prevented the first crash report:
@@ -538,107 +505,34 @@ node tree, meshes, materials, skins and animation inventory 鈥?so a parser chan
 seconds, and when the numbers look wrong in game it separates "the file was read wrong" from "the
 file was drawn wrong". Add `full` to dump every node and primitive.
 
-### The client acceptance run
+### The in-game acceptance runs
 
-The strongest check of all, because it is the only one that exercises the render path inside a real
-client 鈥?which is where every headless check passed while the client still died:
+They are not here either, for the same reason: they need an entity and a command. The companion test
+mod owns them, and they are this API's end-to-end check - the client run joins a world, spawns a
+model, enters the live draw path and holds it for 80 ticks without a fault, and the server run loads
+a model through the real `ResourceManager` on a dedicated server and exits with a verdict. Run them
+from that project; its [README](../model3d_testmod/README.md) has the commands.
 
-```powershell
-.\gradlew.bat runClient -Pmodel3dClientTest=model3d:animated_test
-```
-
-It joins a world, spawns the entity along the camera's own forward vector, holds it for 80 ticks and
-quits. The last line of a run that survives is `80 ticks with the entity spawned and no fault`; a
-run that dies leaves a crash report instead of that line. The client also resolves the model through
-its **own** resource manager on the way - the run logs an instance created for the entity - so this
-is what covers the client's side of the lookup, not only the server's.
-
-To also prove **hot reload**, have it write a model into `config/3dmodels/` mid-session and
-then load it 鈥?a model that did not exist when the client started:
-
-```powershell
-.\gradlew.bat runClient -Pmodel3dClientTest=su-30_flanker -Pmodel3dClientTestHotWrite=hot_added
-```
-
-The client writes the file itself rather than racing an external copy, so the test is reproducible
-instead of depending on how long a person takes to drag a file. A passing run shows the change
-detected in the model folder, the model count rising, and the hot-written model loaded and
-instantiated on the client 鈥?with no restart.
-
-To see how far a draw got, `-Dmodel3d.traceDraw=true` makes the live path log each material's
-resolved texture and, per draw, the CPU path's vertex count and material-group count.
-`-Dmodel3d.traceRender=true` adds the entity renderer's own line, written to **stderr** as well as
-the log because a JVM access violation does not unwind and buffered log output is lost with the
-process:
-
-```powershell
-.\gradlew.bat runClient -Pmodel3dClientTest=model3d:animated_test -Dmodel3d.traceDraw=true
-```
-
-That trace is not decoration: it is what localised this mod's worst bug, back when the renderer
-issued its own draw calls. Every harness check passed, and a real client faulted between two of that
-renderer's trace lines 鈥?`pose read` and `modelView built` 鈥?which named the one statement
-responsible.
-
-### The acceptance run (dedicated server)
-
-Boots a real dedicated server, loads a model from the mod's own jar through the real
-`ResourceManager` path, spawns the entity and prints a verdict the process exit code reflects:
-
-```powershell
-.\gradlew.bat runServer -Pmodel3dSelfTest=model3d:animated_test
-```
-
-It exercises name discovery, resolution, the descriptor, parsing, the animation inventory, scale
-computation, entity creation, the synced model/animation state and the animation cycle. `RESULT:
-PASS` with exit code 0, or `RESULT: FAIL` with exit code 1 and the reasons listed.
-
-There is also `/testmodel diag <model>` in game, which prints the resolution state step by step 鈥?which pack roots were reachable, what the listing returned, and whether the load succeeded. When
-something cannot be found, that report is the difference between a five-minute fix and an
-afternoon: it is what located the `assets`-versus-`data` bug above.
-
-### The synthetic animated fixture
-
-The third-party assets in `models/` contain **no animation and no skin data at all** (all five
-glTF/GLB files have zero `animations` and `skins` keys), leaving the two features this mod exists
-for with no real asset to exercise them:
-
-```powershell
-.\gradlew.bat generateTestModel
-```
-
-It writes `data/model3d/model3d/animated_test/model.glb` 鈥?a two-bone, skinned, animated cube with
-a `spin` (2 s rotation) and a `bob` (1 s translation) animation, generated from reviewable source
-so the fixture is reproducible and can be reshaped to test a hypothesis. **Regeneration is not
-byte-reproducible**: the writer emits JSON whose member order is not fixed between runs, so the
-file's bytes differ from one `generateTestModel` to the next even when nothing about the model
-changed - compare what the parser reads, or what `AnimatedModelIntegrationTest` asserts, not the
-generated bytes. `AnimatedModelIntegrationTest` then drives the whole CPU pipeline over it -
-generated bytes, parser, `ModelInstance`, animation runtime, joint matrices, skinned vertex
-positions computed independently of the production matrix code 鈥?which is the seam neither the
-parser tests nor the animation tests could cover alone.
+What they cover that nothing here can: the four checks above are static or single-statement, and a
+render path that faults *between* two statements passes all of them.
 
 ### What has NOT been verified
 
 Stated plainly, because "compiles" is not "works":
 
-- **Nothing has been seen rendered by a human.** What *is* verified about the render path: the live
-  shader pair compiles and links on a real driver with every uniform, sampler and attribute name the
-  draw uses active (`shaderCheck`); the live CPU mesh path uploads, draws and deletes with no GL
-  error (`meshUploadCheck`); and a **real client** joins a world, spawns the entity, enters the live
-  draw path (the CPU mesh shader compiles in that client) and reaches the harness's own last line -
-  `80 ticks with the entity spawned and no fault` (`runClient -Pmodel3dClientTest`). What is not
-  verified: anything about how the result *looks*. Lighting, texturing, alpha ordering, the pig
-  fallback's appearance and the visual correctness of skinning are human judgements that no
-  automated run makes. One of those is worth naming on its own: **the model's brightness in
-  daylight has not been confirmed end to end** - whether the lightmap fetch and the two light
-  directions make a surface read as correctly lit, rather than washed out or too dark, is
-  unverified. The image is unverified; the calls that produce it are not.
-- **The built-in model's appearance.** Geometry, materials and animation data are asserted
-  numerically; whether it *looks* right is a human judgement.
-- **The `assets/` fallback for pack-hosted models.** The client's own lookup is covered - the client
-  acceptance run above resolves `model3d:animated_test` through the client's resource manager, not
-  only the server's - but every model this project hosts lives under `data/`, and no automated run
-  exercises a model found through the `assets/<namespace>/model3d/<name>/` fallback tree.
-- **The external `<gamedir>/model3d/` path inside a game**: it is covered by the loader's
-  directory branch and by the sample wiring, not by an automated run.
+- **Nothing has been seen rendered by a human.** The shader pair compiles and links on a real driver
+  with every name the draw uses active (`shaderCheck`), the CPU mesh path uploads, draws and deletes
+  with no GL error (`meshUploadCheck`), and a real client enters the draw path and survives 80 ticks
+  (the test mod's acceptance run). What none of that covers is how the result *looks*: lighting,
+  texturing, alpha ordering and the visual correctness of skinning are human judgements. One is worth
+  naming on its own - **whether a surface reads as correctly lit in daylight** is unconfirmed; the
+  lightmap fetch and the two light directions are exercised, the picture is not.
+- **The `assets/` fallback for pack-hosted models.** Every model this project hosts lives under
+  `data/`, and no automated run exercises a model found through the
+  `assets/<namespace>/model3d/<name>/` fallback tree. A dedicated server cannot reach it at all - its
+  resource manager serves `data/` only - which is the reason the order is `data/` first.
+- **The external `<gamedir>/model3d/` path inside a game**: covered by the loader's directory branch
+  and by unit tests, not by an automated run.
+- **The corpus tests** need third-party assets that this repository does not ship
+  (`-Dmodel3d.corpus=<dir>`); without them they skip, and a green run then says nothing about the
+  large real-world models they exist for.
