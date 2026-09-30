@@ -141,6 +141,15 @@ The three places a model can come from, in priority order:
 3. `data/<namespace>/model3d/<name>/` inside a mod jar, datapack or resource pack, with
    `assets/<namespace>/model3d/<name>/` tried as a fallback.
 
+Place 3 is how a mod ships models with itself: a mod that puts a model under its own
+`data/<its namespace>/model3d/<name>/` can reference `its_namespace:name` and the loader resolves it
+out of **that mod's jar** - on the client and on a dedicated server, because the resource manager
+sees every pack. Measured on a live pair of mods: a 2.3 MB aircraft bundled in the second mod's jar
+as `data/model3d_testmod/model3d/su30/model.glb` was loaded on both sides from exactly that path
+(`loaded model3d_testmod:su30 from data/model3d_testmod/model3d/su30/model.glb - nodes=26 meshes=22
+materials=22`), attached to that mod's entity, and rendered - and the dedicated-server self-test
+reported `RESULT: PASS` for it. Nothing in the loader needs to know which mod the model came from.
+
 Everything in a model directory is resolved relative to it: a `.gltf` finds its `.bin` and its
 images, and an `.obj` finds its `.mtl`, which in turn finds its textures. Path resolution is
 case-insensitive and tolerates the folder names exporters invent (`Textures/Glass_Cockpit.jpeg`
