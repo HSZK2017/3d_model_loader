@@ -32,6 +32,13 @@ models/
 # Out-of-band javac output used to type-check the Forge-free packages.
 .tools-build/
 
+# Documentation: README.md is the only document this repository ships. Review findings,
+# repair records and handover notes are working documents - they live in docs/ locally,
+# stay out of the tree, and are not part of what a user clones.
+docs/
+*.md
+!README.md
+
 # Logs and screenshots: run output, not source. The dev client writes logs/ and run/screenshots/,
 # and a diagnostic run can redirect a full console log to the tree.
 logs/
