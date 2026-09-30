@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
  *
  * <p>The case this exists for: {@code config/3dmodels/su30.glb} and {@code config/3dmodels/f16.glb}
  * sit in the SAME directory, so both resolve to the same folder. "Pick a model file from the folder"
- * would then hand {@code /testmodel loader f16} whichever of the two sorted first - a model that
+ * would then hand a spawn command for "f16" whichever of the two sorted first - a model that
  * loads under the wrong name, or fails to parse as the other format. The name the user typed has to
  * select the file, and that is what this pins.
  *

@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   CpuVertexWriter.vertex(CpuVertexWriter.java:104)
  *   ModelCpuRenderPath.fill(ModelCpuRenderPath.java:248)
  *   VanillaModelRenderer.draw(VanillaModelRenderer.java:148)
- *   RenderTestModelEntity.render(RenderTestModelEntity.java:136)
+ *   the entity renderer's draw call (now in the companion test mod: RenderTestModelEntity.render)
  *   Description: Rendering entity in world
  * </pre>
  *

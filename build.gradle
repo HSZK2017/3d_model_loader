@@ -95,72 +95,14 @@ afterEvaluate {
 // ---------------------------------------------------------------------------
 // Test asset wiring
 // ---------------------------------------------------------------------------
-// The real Sukhoi Su-30 sample is third-party licensed material and lives outside the jar, but
-// the acceptance path has to be able to name it. This task exposes it under the dev run directory
-// as `model3d:su30` using a directory junction, so the model is not copied and the test tree
-// stays free of assets that must not be committed. Re-running is idempotent.
-//
-// Windows-only by construction (mklink /J). On any other platform it is skipped with a message
-// rather than failing the build: the model is only needed for a manual in-game check, and the
-// data half of the mod is verified by `test` and `modelInspect`, not by this.
-tasks.register('linkSampleModels') {
-    group = 'verification'
-    description = 'Exposes models/ under run/model3d/model3d/ so the sample Su-30 is loadable as model3d:su30.'
-    // Looked up in two places, because the developer's model assets may live either inside this
-    // project or beside it: `models/` here, or `../models/` when the repository root is a container
-    // for several mod projects. Neither is committed - this is an API mod and ships no geometry.
-    def sampleSource = layout.projectDirectory.dir('models/sukhoi-su-30-flanker-c')
-    if (!sampleSource.asFile.isDirectory()) {
-        sampleSource = layout.projectDirectory.dir('../models/sukhoi-su-30-flanker-c')
-    }
-    def linkParent = layout.projectDirectory.dir('run/model3d/model3d')
-    def linkPath = layout.projectDirectory.file('run/model3d/model3d/su30')
-    // Only the source directory is an input: the junction target is a fresh path each run, so
-    // declaring the output would make Gradle delete a source tree on the first stale check.
-    //
-    // Declared lazily and only when it exists. `inputs.dir(missingPath)` is a task-configuration
-    // failure - "Gradle detected a problem with the following location" - which the doLast guard
-    // below never gets a chance to handle, and a fresh clone has no models/ at all: the repository
-    // ships no model assets. Measured: runClient depends on this task, so a clone without models/
-    // could not start the client until this became tolerant of absence.
-    inputs.files(providers.provider {
-        sampleSource.asFile.isDirectory() ? [sampleSource] : []
-    })
-    doLast {
-        if (!org.gradle.internal.os.OperatingSystem.current().isWindows()) {
-            logger.lifecycle("linkSampleModels: skipped (needs a Windows directory junction). " +
-                    "Copy models/sukhoi-su-30-flanker-c to run/model3d/model3d/su30/ manually.")
-            return
-        }
-        def source = sampleSource.asFile
-        if (!source.isDirectory()) {
-            logger.lifecycle("linkSampleModels: ${source} is absent; nothing to link.")
-            return
-        }
-        def parent = linkParent.asFile
-        parent.mkdirs()
-        def link = linkPath.asFile
-        if (link.exists()) {
-            logger.lifecycle("linkSampleModels: ${link} already present.")
-            return
-        }
-        def result = providers.exec {
-            commandLine 'cmd', '/c', 'mklink', '/J', link.absolutePath, source.absolutePath
-            ignoreExitValue = true
-        }
-        if (result.result.get().exitValue != 0) {
-            logger.lifecycle("linkSampleModels: junction failed; copy manually if you want the " +
-                    "sample model in game. The automated checks do not need it.")
-        }
-    }
-}
-
-// ForgeGradle creates the run tasks late in configuration, so a `tasks.named('runClient')` here
-// would fail with "task not found" while the script is still being evaluated. `configureEach`
-// registers the hook without requiring the task to exist yet.
-tasks.matching { it.name == 'runClient' || it.name == 'runServer' }.configureEach {
-    dependsOn 'linkSampleModels'
-}
+// ---------------------------------------------------------------------------
+// Sample models: no longer linked here
+// ---------------------------------------------------------------------------
+// This task used to junction `models/sukhoi-su-30-flanker-c` into this project's dev run directory as
+// `model3d:su30`, so an in-game check could name the sample aircraft. That made sense while this mod
+// shipped the entity and `/testmodel`; now nothing here can spawn a model, so the link only served the
+// test program - which owns it (see the companion project's build). This mod's dev client can still be
+// used to load a model, by a mod that has a carrier.
 
 // ---------------------------------------------------------------------------
 // The development jar

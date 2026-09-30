@@ -244,7 +244,7 @@ public final class ClientModelManager {
         String wanted = entity.animationName();
         if (wanted == null || wanted.isEmpty()) {
             // No explicit choice: the descriptor's auto animation, which is what makes a bare
-            // /testmodel loader spawn an animated model with no second command.
+            // spawning a model starts its animation with no second command.
             wanted = handle.descriptor().autoAnimation();
         }
         boolean loop = entity.animationName() == null || entity.animationName().isEmpty()

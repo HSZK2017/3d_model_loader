@@ -392,7 +392,8 @@ public final class ModelLoadService {
     /**
      * Rescans immediately, without waiting for the poll.
      *
-     * <p>Backs {@code /testmodel reload}. Detection is automatic, so this exists for the case where
+     * <p>Backs a companion mod's "reload" command. Detection is automatic, so this exists for the case
+ * where
      * waiting a second is not the point: a user who has just dropped a file and wants confirmation
      * now, from the same command they already know.
      */

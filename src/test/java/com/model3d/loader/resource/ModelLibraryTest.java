@@ -134,7 +134,11 @@ class ModelLibraryTest {
         System.out.println("README written, " + text.length() + " chars");
         assertTrue(text.contains("su30.glb"), "it shows the loose-file layout");
         assertTrue(text.contains("model.json"), "it shows the folder layout");
-        assertTrue(text.contains("/testmodel loader"), "it shows the command to type");
+        // Deliberately NOT a command: this jar has none of its own, so the note describes the naming
+        // rule and says a companion mod provides the command. Pinning the absence is the point - the
+        // text used to instruct a user to run a command only the test mod installs.
+        assertFalse(text.contains("/testmodel"), "it does not promise a command this mod lacks");
+        assertTrue(text.contains("no command of its own"), "it says where the command comes from");
 
         // A second prepare must not overwrite notes a user added.
         Files.writeString(readme, "my own notes");
@@ -210,7 +214,7 @@ class ModelLibraryTest {
 
         library.invalidateSignature();
         assertNotEquals(first, library.signature(),
-                "invalidateSignature (which /testmodel reload uses) forces a rescan");
+                "invalidateSignature (which a companion mod's reload command uses) forces a rescan");
     }
 
     @Test

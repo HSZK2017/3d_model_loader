@@ -27,7 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * <b>throws</b>, while ordinary exporter output is exactly that: {@code Textures/Glass_Cockpit.jpeg}.
  * The throw happened while <i>building the argument</i>, so the case-insensitive retry inside
  * {@code find()} could never run, and the exception left the entity renderer -
- * {@code RenderTestModelEntity.render} has a {@code try}/{@code finally} and no catch - producing
+ * the entity renderer's {@code render} (companion test mod) has a {@code try}/{@code finally} and
+ * no catch - producing
  * {@code ReportedException: Rendering entity in world} and killing the client.
  *
  * <p>The first test is the negative control for the guard: it asserts that the unguarded

@@ -25,7 +25,7 @@ import net.minecraft.resources.ResourceLocation;
  * while {@code listResources("models")} - the {@code assets} tree - = <b>0</b>, and a direct
  * {@code getResource} for a mod asset was absent. A model stored under {@code assets/} therefore
  * loads on the client and is invisible to the server, which breaks exactly the property the design
- * wanted: the server validating {@code /testmodel loader <name>} against the real file set.
+ * wanted: the server validating a spawn command's model name against the real file set.
  *
  * <p>{@code assets/} is still tried second, so a client-only model keeps working and a resource
  * pack may legitimately place one there. The cost is one extra map miss.
