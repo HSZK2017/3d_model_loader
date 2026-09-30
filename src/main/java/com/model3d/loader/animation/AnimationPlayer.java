@@ -28,6 +28,10 @@ import org.slf4j.LoggerFactory;
  *   <li>Rotations interpolate with shortest-arc slerp: a quaternion pair on opposite hemispheres
  *       interpolates the long way round without a sign flip, which shows up as a limb spinning
  *       the wrong way through a body.</li>
+ *   <li>After sampling, each node's own overrides are applied over the sampled pose and before the
+ *       world transforms and joint matrices are derived - the per-instance part driving of
+ *       {@code api.ModelNodeRef}. Overrides are the deliberate exception to "the animation is the
+ *       pose": they are the caller's values, and they win.</li>
  * </ul>
  *
  * <p>Every frame the sampler writes into the per-instance node arrays and matrices; nothing here
@@ -78,6 +82,18 @@ public final class AnimationPlayer {
             sample(animation, state.time(), nodes, pose.animatedFlags());
         }
 
+        // Node overrides land here, on top of the sampled pose and before anything is derived from
+        // it. This is the only point in the frame where they can:
+        //   * after the reset-to-rest and the sample above, or the next sample would overwrite them -
+        //     which is the flicker a driven part shows when an override is written before update();
+        //   * before the world-transform walk and computeJointMatrices below, so a driven node that
+        //     is a skin joint moves the skin rather than only its own matrix. Applying the overrides
+        //     after apply() returns would leave the skin at the clip's pose - the part moves, its
+        //     skinned geometry does not.
+        // For an instance that drives nothing this is three null/boolean checks per node and no
+        // allocation: it runs once per instance per frame, on the render thread.
+        applyNodeOverrides(nodes);
+
         // One exit path for every case. A model with no animation still needs its world transforms
         // and - when it is skinned - its joint matrices rebuilt from the rest pose: a static
         // skinned model has to render in its bind pose, not with the zero matrices an untouched
@@ -86,6 +102,20 @@ public final class AnimationPlayer {
         ModelScene.updateWorldTransformsInPlace(nodes, scene.rootNodes());
         copyWorldMatrices(nodes, pose);
         computeJointMatrices(scene, nodes, pose);
+    }
+
+    /**
+     * Writes every node's own overrides over its sampled pose. See the call site for why this is a
+     * separate step and where in the frame it belongs.
+     *
+     * <p>No per-instance registry is kept of which nodes are overridden: a lookup structure would
+     * have to be kept in step with the overrides themselves (and with {@code ModelInstance#setScene},
+     * which replaces the tree), and the check it would save is one null comparison per node.
+     */
+    private static void applyNodeOverrides(ModelNode[] nodes) {
+        for (int i = 0; i < nodes.length; i++) {
+            nodes[i].applyOverrides();
+        }
     }
 
     /** Overload used where only a single {@link ModelAnimation} is at hand (tests, tools). */

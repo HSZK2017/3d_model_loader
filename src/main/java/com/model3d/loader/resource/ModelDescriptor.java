@@ -49,10 +49,15 @@ public final class ModelDescriptor {
     /** Axis letters the renderer negates, or null when the model declares none. */
     private final String mirror;
     private final Map<String, String> textureAliases;
+    /** Full size in blocks of the declared collision box, or null for "derive it from the geometry". */
+    private final float[] hitbox;
+    /** Centre of the declared collision box, in blocks, relative to the entity's own origin. */
+    private final float[] hitboxOffset;
 
     private ModelDescriptor(String modelFile, float scale, float targetBlocks, float[] pivot,
                             String autoAnimation, boolean autoAnimationLoop, float yawOffsetDegrees,
-                            String mirror, Map<String, String> textureAliases) {
+                            String mirror, Map<String, String> textureAliases, float[] hitbox,
+                            float[] hitboxOffset) {
         this.modelFile = modelFile;
         this.scale = scale;
         this.targetBlocks = targetBlocks;
@@ -62,6 +67,8 @@ public final class ModelDescriptor {
         this.yawOffsetDegrees = yawOffsetDegrees;
         this.mirror = mirror;
         this.textureAliases = Collections.unmodifiableMap(textureAliases);
+        this.hitbox = hitbox;
+        this.hitboxOffset = hitboxOffset;
     }
 
     /** Sensible defaults: 1 block per model unit, no pivot, no auto animation. */
@@ -70,7 +77,7 @@ public final class ModelDescriptor {
         // than the default constant so this class keeps no opinion about size, and so the value cannot
         // drift out of step with the one place that decides scale.
         return new ModelDescriptor(null, 1.0f, 0.0f, new float[] { 0, 0, 0 }, null, true, 0.0f,
-                null, Map.of());
+                null, Map.of(), null, new float[] { 0, 0, 0 });
     }
 
     /**
@@ -136,6 +143,22 @@ public final class ModelDescriptor {
         float yawOffsetDegrees = optFloat(root, "yawOffsetDegrees", 0.0f);
         String mirror = mirrorAxes(optString(root, "mirror", null));
 
+        // A declared collision box, in blocks. Fail closed on a non-positive axis for the same reason
+        // the scale does: a zero-size box is an entity you walk through, which reads as "the model did
+        // not load" and sends the author looking in the wrong place. Omitted means "derive it".
+        float[] hitbox = optVec3(root, "hitbox", null);
+        if (hitbox != null) {
+            for (int axis = 0; axis < 3; axis++) {
+                if (!(hitbox[axis] > 0.0f) || !Float.isFinite(hitbox[axis])) {
+                    throw new ModelDescriptorException("model.json \"hitbox\" is "
+                            + java.util.Arrays.toString(hitbox)
+                            + "; every axis is a size in blocks and must be > 0, or omit the key to "
+                            + "derive the box from the model");
+                }
+            }
+        }
+        float[] hitboxOffset = optVec3(root, "hitboxOffset", new float[] { 0, 0, 0 });
+
         Map<String, String> aliases = new LinkedHashMap<>();
         if (root.has("textures") && root.get("textures").isJsonObject()) {
             for (Map.Entry<String, JsonElement> entry : root.getAsJsonObject("textures").entrySet()) {
@@ -149,7 +172,68 @@ public final class ModelDescriptor {
         }
 
         return new ModelDescriptor(modelFile, scale, targetBlocks, pivot, autoAnimation,
-                autoAnimationLoop, yawOffsetDegrees, mirror, aliases);
+                autoAnimationLoop, yawOffsetDegrees, mirror, aliases, hitbox, hitboxOffset);
+    }
+
+    /**
+     * The collision box the model declares, as {@code [sizeX, sizeY, sizeZ]} in blocks, or null when
+     * it declares none - in which case {@link com.model3d.loader.api.ModelHitbox} derives the box from
+     * the model's own geometry and the scale that was applied to it.
+     *
+     * <p>Declaring it is how a model whose shape is nothing like its geometry says so: a 40-block
+     * aircraft whose fuselage is 4 blocks tall wants a hitbox that is long and flat, and deriving that
+     * from a box that also contains the wings and the tail gives a slab the player can stand on.
+     *
+     * <p>The size is in **blocks, as the model ends up in the world**, not in the file's units: a
+     * declared box is used as written and is not multiplied by the scale, because the whole point of
+     * writing it down is to stop the derived value from being wrong.
+     */
+    public float[] hitbox() {
+        return hitbox == null ? null
+                : new float[] { hitbox[0], hitbox[1], hitbox[2] };
+    }
+
+    /** The declared box's centre in blocks relative to the entity's origin; zero when undeclared. */
+    public float[] hitboxOffset() {
+        return new float[] { hitboxOffset[0], hitboxOffset[1], hitboxOffset[2] };
+    }
+
+    /**
+     * Parses an optional 3-number array such as {@code [12, 4, 30]}, or returns {@code fallback} when
+     * the key is absent.
+     *
+     * <p>All three numbers are required when the key is present: a half-written vector is a typo, and
+     * guessing the missing axis is how a hitbox ends up a slab. The values are read as floats, so an
+     * integer in the file works too.
+     */
+    private static float[] optVec3(JsonObject root, String key, float[] fallback)
+            throws ModelDescriptorException {
+        if (!root.has(key)) {
+            return fallback;
+        }
+        if (!root.get(key).isJsonArray()) {
+            throw new ModelDescriptorException("model.json \"" + key + "\" must be an array of 3 "
+                    + "numbers, got: " + root.get(key));
+        }
+        var array = root.getAsJsonArray(key);
+        if (array.size() != 3) {
+            throw new ModelDescriptorException("model.json \"" + key + "\" needs 3 numbers, got "
+                    + array.size());
+        }
+        float[] values = new float[3];
+        for (int i = 0; i < 3; i++) {
+            try {
+                values[i] = array.get(i).getAsFloat();
+            } catch (RuntimeException e) {
+                throw new ModelDescriptorException("model.json \"" + key + "\"[" + i
+                        + "] is not a number: " + array.get(i), e);
+            }
+            if (!Float.isFinite(values[i])) {
+                throw new ModelDescriptorException("model.json \"" + key + "\"[" + i
+                        + "] must be a finite number, got: " + values[i]);
+            }
+        }
+        return values;
     }
 
     /**

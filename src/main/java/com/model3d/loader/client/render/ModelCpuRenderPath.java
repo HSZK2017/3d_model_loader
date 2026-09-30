@@ -172,7 +172,7 @@ final class ModelCpuRenderPath {
         if (writer.writtenVertices() == 0) {
             return false;
         }
-        return issue(poseStack, mesh, writer, scene, drawList, textures, fallbackTexture,
+        return issue(poseStack, mesh, writer, scene, instance, drawList, textures, fallbackTexture,
                 packedLight, packedOverlay);
     }
 
@@ -299,8 +299,9 @@ final class ModelCpuRenderPath {
 
     /** The GL state sequence and the draws, ported from the reference's {@code draw}. */
     private static boolean issue(PoseStack poseStack, ModelCpuMesh mesh, CpuVertexWriter writer,
-                                 ModelScene scene, ModelDrawList drawList, ResourceLocation[] textures,
-                                 ResourceLocation fallbackTexture, int packedLight, int packedOverlay) {
+                                 ModelScene scene, ModelInstance instance, ModelDrawList drawList,
+                                 ResourceLocation[] textures, ResourceLocation fallbackTexture,
+                                 int packedLight, int packedOverlay) {
         RenderSystem.getProjectionMatrix().get(projScratch);
         RenderSystem.getModelViewMatrix().get(mvScratch);
         RenderSystem.getInverseViewRotationMatrix().get(ivrScratch);
@@ -376,8 +377,8 @@ final class ModelCpuRenderPath {
             // OPAQUE and MASK first, BLEND second. Not cosmetic: a blended surface must blend over an
             // image that is already complete, and the opaque pass is what writes the depth that keeps a
             // model's own far side behind its near one. See applyMaterialState for the depth rule.
-            int drawn = drawGroups(mesh, writer, scene, textures, fallbackTexture, false);
-            drawn += drawGroups(mesh, writer, scene, textures, fallbackTexture, true);
+            int drawn = drawGroups(mesh, writer, scene, instance, textures, fallbackTexture, false);
+            drawn += drawGroups(mesh, writer, scene, instance, textures, fallbackTexture, true);
             mesh.unbind();
             if (TRACE) {
                 Model3D.LOGGER.info("Model3D: CPU path drew {} vertices in {} material group(s) for {}",
@@ -392,11 +393,12 @@ final class ModelCpuRenderPath {
      * true selects BLEND ones.
      *
      * <p>Everything that can differ between materials - the texture, the colour, the cutout threshold,
-     * blending, culling - is set here, per group, from the material itself.
+     * blending, culling - is set here, per group, from the material itself. The colour is the one
+     * value an instance may override: see {@link #applyMaterialUniforms}.
      */
     private static int drawGroups(ModelCpuMesh mesh, CpuVertexWriter writer, ModelScene scene,
-                                  ResourceLocation[] textures, ResourceLocation fallbackTexture,
-                                  boolean blendPass) {
+                                  ModelInstance instance, ResourceLocation[] textures,
+                                  ResourceLocation fallbackTexture, boolean blendPass) {
         int drawn = 0;
         for (Map.Entry<Integer, java.util.List<int[]>> entry : writer.ranges().entrySet()) {
             int materialIndex = entry.getKey();
@@ -406,7 +408,7 @@ final class ModelCpuRenderPath {
                 continue;
             }
             bindMaterialTexture(textures, materialIndex, fallbackTexture);
-            applyMaterialUniforms(material);
+            applyMaterialUniforms(material, instance, materialIndex);
             applyMaterialState(material);
             if (TRACE) {
                 // As-run state, read back from GL rather than assumed from the calls above: a state
@@ -462,11 +464,17 @@ final class ModelCpuRenderPath {
         GlStateManager._bindTexture(bound == null ? 0 : bound.getId());
     }
 
-    /** The per-material uniforms: colour, alpha test and its cutoff. */
-    private static void applyMaterialUniforms(ModelMaterial material) {
-        float[] base = material.baseColorFactor();
+    /**
+     * The per-material uniforms: colour, alpha test and its cutoff.
+     *
+     * <p>The colour is the one value an instance may override - see {@link #groupColor} for where it
+     * comes from and why that choice is a separate, testable function.
+     */
+    private static void applyMaterialUniforms(ModelMaterial material, ModelInstance instance,
+                                              int materialIndex) {
         if (locColor >= 0) {
-            GL20.glUniform4f(locColor, base[0], base[1], base[2], base[3]);
+            float[] color = groupColor(material, instance, materialIndex);
+            GL20.glUniform4f(locColor, color[0], color[1], color[2], color[3]);
         }
         if (locAlphaMode >= 0) {
             GL20.glUniform1i(locAlphaMode, alphaModeCode(material.alphaMode()));
@@ -474,6 +482,33 @@ final class ModelCpuRenderPath {
         if (locAlphaCutoff >= 0) {
             GL20.glUniform1f(locAlphaCutoff, material.alphaCutoff());
         }
+    }
+
+    /**
+     * The RGBA this draw uploads for one material group: the instance's tint when it carries one,
+     * the material's own {@code baseColorFactor} otherwise.
+     *
+     * <p>The material's own colour is what the file says; a tint is the caller's override for this
+     * entity only - the afterburner plume made brighter, the anti-collision light flashed. It is
+     * looked up by <b>material index</b> rather than by name: this runs once per material group per
+     * entity per frame, and a case-insensitive name comparison per group would be string work on the
+     * hot path for a value that was already resolved when the tint was set.
+     *
+     * <p>Separated from {@link #applyMaterialUniforms} because the alternative is to verify the tint
+     * by reading the code: a {@code glUniform4f} needs a GL context, and "the tint is applied" is
+     * exactly the kind of claim this project has been wrong about before (see {@code u_color} in
+     * {@code LiveShaderContractTest}'s class comment - the location was fetched, nothing uploaded,
+     * and the model drew transparent black). As a pure function it is asserted by
+     * {@code MaterialTintColorTest}.
+     *
+     * <p>Read-only for the caller. The tint array is the instance's live storage: copying it here
+     * would allocate once per material group per entity per frame, and {@code material
+     * .baseColorFactor()} - which does copy - is called only when there is no tint. A tinted material
+     * therefore allocates nothing on this path at all.
+     */
+    static float[] groupColor(ModelMaterial material, ModelInstance instance, int materialIndex) {
+        float[] tint = instance == null ? null : instance.materialTint(materialIndex);
+        return tint != null ? tint : material.baseColorFactor();
     }
 
     /** The shader's alpha-mode codes, named rather than taking the enum's ordinal. */

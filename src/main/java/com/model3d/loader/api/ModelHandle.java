@@ -95,6 +95,27 @@ public final class ModelHandle {
     }
 
     /**
+     * The model's bounding box in the file's own units, as
+     * {@code [minX, minY, minZ, maxX, maxY, maxZ]} - see {@link ModelBounds} for the helpers.
+     *
+     * <p>A copy, not the scene's own array: this is a value a caller may keep or modify, and handing
+     * out the live array would let one caller corrupt what every other entity's hitbox is computed
+     * from.
+     *
+     * <p>The box is relative to the model's origin, which is not necessarily its centre: a model
+     * exported with its pivot at the nose has an asymmetric box, and that asymmetry is exactly what
+     * {@link ModelHitbox} needs to preserve. A model's own `model.json` may override this entirely.
+     */
+    public float[] bounds() {
+        float[] sceneBounds = scene == null ? null : scene.bounds();
+        if (sceneBounds == null || sceneBounds.length < 6) {
+            return ModelBounds.empty();
+        }
+        return new float[] { sceneBounds[0], sceneBounds[1], sceneBounds[2],
+                sceneBounds[3], sceneBounds[4], sceneBounds[5] };
+    }
+
+    /**
      * The parsed scene - <b>internal shape, not part of the API contract</b>.
      *
      * <p>Its type lives in a package this mod does not publish, so a caller cannot name it: no

@@ -198,6 +198,11 @@ public final class ModelScene {
      * <p>Children are relinked against the copied nodes; node indices are preserved so that
      * meshes, skins and animation channels - all of which refer to nodes by index - keep
      * pointing at the right node without any remapping.
+     *
+     * <p>The copy starts with every node visible and no per-node overrides: those (see
+     * {@link ModelNode#hasOverrides()}) are per-instance state, and a new instance must never inherit
+     * them from the templates or from another instance - which is why the copies are built from the
+     * templates' rest values rather than copied wholesale.
      */
     public ModelNode[] instantiate() {
         ModelNode[] copies = new ModelNode[nodeTemplates.length];

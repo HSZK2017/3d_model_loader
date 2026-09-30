@@ -1,5 +1,6 @@
 package com.model3d.loader.client.render;
 
+import com.model3d.loader.api.ModelInstance;
 import com.model3d.loader.scene.ModelMesh;
 import com.model3d.loader.scene.ModelNode;
 import com.model3d.loader.scene.ModelPrimitive;
@@ -26,7 +27,21 @@ import java.util.List;
  * double-apply it and fling the mesh away from the body - so {@link Drawable#usesNodeTransform()}
  * is false for skinned primitives and the renderer skips it.
  *
- * <p>Immutable after construction. Built on the render thread, once per {@code ModelHandle}.
+ * <h2>Visibility is decided here, per instance</h2>
+ * {@link #build(ModelScene, ModelInstance)} skips a node whose instance visibility override hides
+ * it, <b>and does not descend into it</b>: visibility is inherited, so a hidden gear-bay door takes
+ * its children with it, and hiding a whole node keeps its geometry out of the list entirely rather
+ * than leaving it there for a renderer to skip. That is why the filter belongs to the walk and not
+ * to the submission loop - the walk is where "and its descendants" is cheap, and it is where the
+ * decision costs no allocation (it is one boolean read per node; see {@code ModelNode#isVisible}).
+ *
+ * <p>The scene's own node templates are never touched: the overrides live on the instance's copy of
+ * the tree, which is the whole reason two entities can share one {@link ModelScene} and still differ.
+ * A caller that passes no instance - {@link #build(ModelScene)} - gets every primitive, which is what
+ * the tools and the sizing tests want.
+ *
+ * <p>Immutable after construction. Built on the render thread, once per instance per frame by
+ * {@code VanillaModelRenderer}.
  */
 public final class ModelDrawList {
 
@@ -87,12 +102,34 @@ public final class ModelDrawList {
     }
 
     /**
-     * Walks {@code scene}'s node tree and collects every drawable primitive.
+     * Walks {@code scene}'s node tree and collects every drawable primitive, ignoring per-instance
+     * visibility: the scene's own rest data is all this reads.
      *
-     * @param skinned true when the scene declares a skin, in which case the first skin's joint
-     *                count is reported and primitives carrying joint data skip the node transform
+     * <p>This is the form the tools and the sizing tests use - {@code CpuVertexWriterCapacityTest}
+     * asserts against the whole model's arithmetic, hidden or not. Rendering goes through
+     * {@link #build(ModelScene, ModelInstance)} so a hidden part is never submitted.
      */
     public static ModelDrawList build(ModelScene scene) {
+        return build(scene, null);
+    }
+
+    /**
+     * As {@link #build(ModelScene)}, but skipping the parts {@code instance} has hidden - a hidden
+     * node's own primitives and every descendant's.
+     *
+     * <p>Structure comes from the scene's templates (a node's index, mesh and children are load-time
+     * data), while <b>visibility comes from the instance's node tree</b>, read by index: the two trees
+     * have the same length and the same indices by construction - see {@code ModelScene#instantiate()}
+     * - so no mapping is needed.
+     *
+     * <p>An instance that does not belong to {@code scene}, or has no tree, is ignored and the full
+     * list is returned. That is a caller bug, but this runs once per entity per frame on the render
+     * thread: degrading to the pre-visibility behaviour (draw everything) is recoverable, while an
+     * exception here takes the frame down. A <i>hidden</i> node, by contrast, must fail the other way -
+     * so the two are not conflated: only a mismatch of tree and scene disables filtering.
+     */
+    public static ModelDrawList build(ModelScene scene, ModelInstance instance) {
+        ModelNode[] instanceNodes = instanceNodes(instance, scene);
         List<Drawable> collected = new ArrayList<>();
         int vertexCount = 0;
         int indexCount = 0;
@@ -101,13 +138,14 @@ public final class ModelDrawList {
         boolean[] visited = new boolean[scene.nodeCount()];
         for (int root : scene.rootNodes()) {
             if (root >= 0 && root < visited.length && !visited[root]) {
-                walk(scene, root, collected, visited);
+                walk(scene, instanceNodes, root, collected, visited);
             }
         }
 
         // A mesh attached to no node is not addressable by the scene graph, but it is still
         // geometry the file asked to have drawn; hanging it off the model origin is the only
-        // interpretation that does not silently drop it.
+        // interpretation that does not silently drop it. It has no node, so no node's visibility
+        // can speak for it either way and it is always collected.
         for (int meshIndex = 0; meshIndex < scene.meshes().length; meshIndex++) {
             ModelMesh mesh = scene.meshes()[meshIndex];
             boolean attached = false;
@@ -132,8 +170,32 @@ public final class ModelDrawList {
                 triangleCount, jointCount);
     }
 
-    private static void walk(ModelScene scene, int nodeIndex, List<Drawable> out, boolean[] visited) {
+    /**
+     * The instance's node tree, when it is that of {@code scene} and can answer visibility; null
+     * otherwise. See {@link #build(ModelScene, ModelInstance)} for why a mismatch degrades instead of
+     * throwing.
+     */
+    private static ModelNode[] instanceNodes(ModelInstance instance, ModelScene scene) {
+        if (instance == null || instance.scene() != scene) {
+            return null;
+        }
+        ModelNode[] nodes = instance.nodes();
+        if (nodes == null || nodes.length != scene.nodeCount()) {
+            return null;
+        }
+        return nodes;
+    }
+
+    private static void walk(ModelScene scene, ModelNode[] instanceNodes, int nodeIndex,
+                             List<Drawable> out, boolean[] visited) {
         visited[nodeIndex] = true;
+        ModelNode instanceNode = instanceNodes == null ? null : instanceNodes[nodeIndex];
+        if (instanceNode != null && !instanceNode.isVisible()) {
+            // Hidden by this node's own override or by an ancestor's, and not walked further: a
+            // hidden node hides everything under it. Returning here is also what keeps the check
+            // O(1) per node instead of one ancestor walk per primitive.
+            return;
+        }
         ModelNode node = scene.nodeTemplates()[nodeIndex];
         if (node.meshIndex() >= 0 && node.meshIndex() < scene.meshes().length) {
             addMesh(scene, scene.meshes()[node.meshIndex()], node.meshIndex(), nodeIndex,
@@ -141,7 +203,7 @@ public final class ModelDrawList {
         }
         for (ModelNode child : node.children()) {
             if (!visited[child.index()]) {
-                walk(scene, child.index(), out, visited);
+                walk(scene, instanceNodes, child.index(), out, visited);
             }
         }
     }

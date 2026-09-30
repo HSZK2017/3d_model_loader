@@ -100,7 +100,11 @@ public final class VanillaModelRenderer {
             return false;
         }
         ModelScene scene = instance.scene();
-        ModelDrawList drawList = ModelDrawList.build(scene);
+        // Built per instance, not per model: the scene supplies the structure, but whether a part is
+        // drawn at all is an override on the instance (a retracted gear leg is hidden on one aircraft
+        // and not on the other). Passing the instance is what makes the walk skip hidden subtrees;
+        // see ModelDrawList#build(ModelScene, ModelInstance).
+        ModelDrawList drawList = ModelDrawList.build(scene, instance);
         if (drawList.drawableCount() == 0) {
             return false;
         }
@@ -165,8 +169,8 @@ public final class VanillaModelRenderer {
                 ? scene.skins()[0].jointCount() : 0;
 
         // The draw list built above is passed down rather than rebuilt inside the CPU path: it is
-        // derived from the scene alone, and building it twice per entity per frame walked the node
-        // tree twice for the same answer.
+        // derived from the scene and this instance's visibility overrides, and building it twice per
+        // entity per frame walked the node tree twice for the same answer.
         //
         // fallbackTexture is the registered 1x1 white texture, bound for a material that names no
         // image at all - without it the draw binds GL texture 0, which samples black, and the model

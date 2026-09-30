@@ -214,7 +214,15 @@ Only needed when the file cannot speak for itself.
 | `mirror` | Axis letters to negate before placing the model: any of `x`, `y`, `z`, or `none`. Omit it to use the loader's default (`xy`, a half turn that corrects a model exported upside down *and* facing backwards - one fault, since two negated axes are a rotation). A value that names no axis is rejected rather than ignored. `-Dmodel3d.mirror=…` overrides every model, for comparing two settings on one build. |
 | `autoAnimation` | Animation to start on spawn. A model's first animation is often a static pose, so picking by name beats picking by index. |
 | `autoAnimationLoop` | Default `true`. |
+| `hitbox` | The collision box to use, `[sizeX, sizeY, sizeZ]` in **blocks**, used exactly as written and **not** multiplied by the scale. Omit it and the box is derived from the model's geometry times the scale that was applied. Every axis must be > 0 - a zero-size box is an entity you walk through, which reads as "the model did not load" - so a bad value is rejected at parse time. |
+| `hitboxOffset` | Where that box sits, `[x, y, z]` in blocks relative to the entity's own origin (its feet). Default `[0, 0, 0]`, i.e. centred on the entity. This is what an off-centre model needs: a nose-pivot aircraft's box extends further behind the entity than in front, and a box centred blindly would let players walk through the nose. |
 | `textures` | Path replacements, keyed by the path *as written in the model file*. Lets you repaint a model without editing it. |
+
+`hitbox` is the key a vehicle or aircraft model usually needs. The automatic box is the geometry's
+bounding box, so for an aircraft it contains the wings and the tail as well as the fuselage: a
+40 x 12 x 30 block slab that players can stand on. Declaring `"hitbox": [11, 4, 34]` puts the
+collision box around the fuselage instead, while the wings keep their geometry. See
+`api.ModelHitbox` for the same choice from code.
 
 A malformed `model.json` is reported and then ignored 鈥?the model still loads by
 auto-detection rather than becoming unloadable because of one bad character in a side file.
@@ -359,11 +367,124 @@ spawn-distance check wants. `handle.summary()` returns a `ModelSummary`: nodes, 
 triangles, materials, skins, images, `longestExtent`, whether it is skinned, and each animation's
 name, track count and duration.
 
+### 6. Size the entity's collision box to the model
+
+A 40-block aircraft with a vanilla mob's 0.6 x 1.8 box is an entity you walk through. The box is a
+property of the model, so the API derives it - and lets the model's author overrule the derivation:
+
+```java
+ModelHitbox.Box box = ModelHitbox.of(handle, carrier.modelScale());   // 0 = use the loader's scale
+if (!box.isEmpty()) {
+    // Option A: the real shape (30 wide, 4 tall, 40 long), for an entity that owns its own box:
+    setBoundingBox(box.aabb(getX(), getY(), getZ()));
+
+    // Option B: the vanilla-shaped approximation, width x height with a square footprint. Width is the
+    // wider horizontal axis, so nobody walks through a wing; the depth is lost, which the game's entity
+    // box cannot express.
+    EntityDimensions dimensions = box.dimensions();
+}
+```
+
+Both numbers come from the same place the renderer used: the model's geometry times the scale that
+was actually applied, or the `hitbox`/`hitboxOffset` the model declared. A consumer that computed
+them itself would drift the moment a scale changed; that drift is invisible until a player walks
+through a wing or stands on nothing.
+
+Measured on this project's sample aircraft, with no declaration at all - the automatic answer:
+
+```
+client hitbox for model3d_testmod:su30 -> ModelHitbox.Box(size=(40.00, 3.82, 6.16) offset=(19.84, -1.21, 0.00))
+```
+
+40 blocks long, 3.82 tall, 6.16 wide, and pushed **19.84 blocks** to one side of the entity's origin
+because that model's pivot sits at its nose. A box centred on the entity would have been half the
+aircraft out of place - which is the off-centre case the API exists to preserve.
+
+Note what `dimensions()` does with those numbers: it can only express one width and one height, so it
+answers 40 x 40, a square as long as the aircraft. It is still better than a mob-sized box, but a
+vehicle should override its own bounding box with `aabb(x, y, z)` and get the real shape. If even the
+automatic shape is wrong - an aircraft's box should follow the fuselage, not a slab containing wings
+and tail - the model declares `"hitbox": [11, 4, 34]` in its `model.json` and the API uses it as
+written.
+
+Recompute it when the model or the scale changes, not per tick: it is arithmetic over values already
+in memory.
+
+### 7. Drive the model's parts
+
+An aircraft's control surfaces, afterburner, gear and lights are *parts* of one model, and a flight
+mod drives them from its own flight state. The API addresses nodes by name and applies the override
+on top of whatever animation is playing, so a part can be driven without editing a single byte of the
+model file.
+
+See [Driving the parts of a model](#driving-the-parts-of-a-model) for the full recipe.
+
 ### Worked example
 
 The companion test mod in `../model3d_testmod` is the reference implementation. Its entity implements
 `ModelCarrier`, its renderer is the block above, and its unattended acceptance run is what proves
 that this surface is enough to load, animate and draw a model from outside this mod.
+
+---
+
+## Driving the parts of a model
+
+A flight mod does not play a canned clip for its control surfaces. It deflects an elevator because its
+own pitch changed, expands a nozzle because afterburner came on, swings gear doors while the gear
+retracts, and blinks a light on a timer. Those look like four features and are one operation: address a
+node by name, and drive it. The API applies the drive on top of whatever animation is playing, so a
+model can be flown without editing a single byte of it.
+
+```java
+// Per frame, from the consumer's own flight state. All of it is render-thread work, like any draw.
+ModelInstance instance = ClientModelManager.get().instanceFor(entity);
+
+instance.node("elevator_left").setRotation(pitchDegrees, 0.0F, 0.0F);   // control surfaces
+instance.node("aileron_right").setRotation(0.0F, 0.0F, rollDegrees);
+instance.node("rudder").setRotation(0.0F, yawDegrees, 0.0F);
+
+instance.node("nozzle_left").setScale(1.15F);                          // afterburner: the assembly
+instance.setMaterialTint("afterburner", 2.0F, 1.75F, 1.5F, 0.75F);     // ...and a hotter plume
+
+instance.node("gear_door_left").setRotation(gearDegrees, 0.0F, 0.0F);  // gear, then the bay
+instance.node("gear_bay_left").setVisible(gearPosition > 0.99F);       // hidden when shut
+
+instance.node("beacon").setVisible((entity.tickCount / 10) % 2 == 0);  // anti-collision light
+```
+
+| | |
+|---|---|
+| `node(String)` | A handle for one node, matched case-insensitively - or **null** when the model has no such node, which is the normal case for a model that simply lacks that part. Check it: a missing part is not an error, it is a model without that part. |
+| `setRotation(x, y, z)` | Degrees, applied **x, then y, then z**. Replaces the node's own rotation, so a clip that also poses it does not blend with the drive. |
+| `setTranslation(x, y, z)` | **Adds** an offset, in the node's local space and the file's own units. |
+| `setScale(uniform)` | Replaces the node's local scale; children inherit it, which is what makes a nozzle assembly expand as one piece. |
+| `setVisible(boolean)` | Hides the node **and everything under it**. Effective visibility is what `visible()` reports. |
+| `setMaterialTint(name, r, g, b, a)` | Replaces that material's colour for this instance only - values above 1 are allowed and are how a plume is made hotter than its texture. `clearMaterialTint(name)` removes it. |
+| `clear()` | Puts a node back to what the file and the clip say. Chaining: every setter returns the handle. |
+
+Rules worth knowing before using it:
+
+- **Overrides survive the animation.** The clip resets the tree to its rest pose every frame; drives are
+  reapplied after that reset, so a driven part does not flicker between the two. An override stays in
+  force until `clear()` - it does not have to be re-set each frame, though setting it from live state
+  is the normal way to use it.
+- **Drives belong to the instance, not the model.** Two entities flying the same aircraft file have
+  independent gear, lights and control surfaces, because the parsed scene is never written to.
+- **A node handle refers to the instance's current tree.** Re-fetch it after the model changes.
+- **Name lookup is a linear scan.** A consumer driving twenty surfaces should keep its handles instead
+  of looking them up by name every frame; there is no per-frame allocation either way.
+
+Measured on a real 26-node aircraft, driven from the test mod's own state in about ten lines:
+
+```
+Model3D testmod: driving 2 of 26 node(s) of model3d_testmod:su30 - 'Object_25' deflected to -30.0
+degrees, 'Sketchfab_model' visible=false
+```
+
+The two properties that matter are asserted by the API's own tests, against a hand-derived skinned
+vertex rather than a matrix: a driven **joint** moves the geometry (not just the node), and an override
+is still in force after repeated updates - the failure mode being a driven part that silently snaps
+back to the clip's pose, which looks exactly like the feature not working.
 
 ---
 
