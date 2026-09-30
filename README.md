@@ -419,11 +419,45 @@ model file.
 
 See [Driving the parts of a model](#driving-the-parts-of-a-model) for the full recipe.
 
+### 8. Play a clip backwards, or hold a pose
+
+A lid that opens is **one** clip, not two. To close it, run the same clip at a negative rate: the rate
+is a multiplier on the clip's own rate, it is read on every `update(dt)`, and it keeps the clip's
+position - so a sign flip mid-flight reverses from where the clock currently is, and a lid toggled
+halfway open closes from halfway open.
+
+```java
+instance.play("lid_open", false);        // one-shot: the clock stops exactly at the duration
+instance.setPlaybackSpeed(+1.0f);        // opening
+
+// once per frame, after instance.update(dt):
+if (instance.animationTime() >= instance.animationDuration()) {
+    instance.setPlaybackSpeed(0.0f);     // hold the open pose
+}
+```
+
+Closing is the same recipe with `-1.0f` and `animationTime() <= 0.0f`.
+
+| | |
+|---|---|
+| `setPlaybackSpeed(speed)` | Multiplier on the clip's rate: `1` is the file's rate, `0` freezes the pose, **negative plays backwards**. Non-finite values are ignored, leaving the previous rate in force. Sticky across `play()` and `stopAnimation()` - it is a setting, not a property of the clip that happens to be loaded. |
+| `playbackSpeed()` | The current rate; `1.0` until a caller changes it. |
+| `animationTime()` | Seconds into the current clip, already wrapped for a looping clip, and `0` when no clip is attached. A one-shot clip that ran to its end reports **exactly** `animationDuration()` - which is what makes "run to the end and hold" expressible at all. |
+| `animationDuration()` | The current clip's length in seconds, `0` when no clip is attached. |
+
+There is deliberately no "play to the end and stop" mode in the API: whether the end means *hold this
+pose* or *start the next clip* is the caller's decision, so the caller owns it. What the API does
+guarantee is that **a clock position poses identically however it was reached** - forwards or backwards
+- so reversing a clip replays exactly the poses it passed through on the way out, instead of a second
+interpolation path that could disagree. That property, the wrap at both ends and the bit-identical
+freeze at rate `0` are pinned by `ModelPlaybackSpeedTest`.
+
 ### Worked example
 
 The companion test mod in `../model3d_testmod` is the reference implementation. Its entity implements
-`ModelCarrier`, its renderer is the block above, and its unattended acceptance run is what proves
-that this surface is enough to load, animate and draw a model from outside this mod.
+`ModelCarrier`; its display block drives a bundled model from a server-authoritative open/closed state
+through the recipe in step 8; its two unattended client acceptance runs are what prove that this
+surface is enough to load, animate and draw a model from outside this mod.
 
 ---
 

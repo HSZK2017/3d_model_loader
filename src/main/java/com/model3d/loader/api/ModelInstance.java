@@ -40,6 +40,32 @@ import com.model3d.loader.scene.ModelScene;
  * root transform ({@code pivot}, then {@code yaw}, then {@code scale}), and a caller that only wants
  * to resize a model must not have to restate the other two.
  *
+ * <h2>Reverse playback and "stop at this pose"</h2>
+ * A clip is a curve, not a state machine: there is no {@code open()} and no {@code close()} in the
+ * file, only one animation that runs from closed to open. Closing it therefore means running the
+ * same clip at a negative rate, and that is all {@link #setPlaybackSpeed} does - it multiplies the
+ * clip's own rate, keeps the clip's position, and is read on every update. A sign flip mid-flight
+ * reverses from where the clock currently is, so a lid toggled halfway through opening closes from
+ * halfway through opening.
+ *
+ * <p><b>The API deliberately has no "play to the end and stop" mode</b>, because whether the end
+ * means "hold the open pose" or "start the next clip" is the caller's business. The recipe is three
+ * lines, and it is the one the companion test mod's display block uses:
+ * <pre>
+ *   instance.play("lid_open", false);   // non-looping: the clock stops at exactly the duration
+ *   instance.setPlaybackSpeed(+1.0f);   // forward, from wherever the clock is
+ *
+ *   // once per frame, after instance.update(dt):
+ *   if (instance.animationTime() >= instance.animationDuration()) {
+ *       instance.setPlaybackSpeed(0.0f);        // freeze on the open pose
+ *   }
+ * </pre>
+ * Closing is the same recipe with {@code -1.0f} and {@code animationTime() <= 0.0f}. Both halves
+ * rely on the two properties {@link #animationTime()} and {@link #animationDuration()} document: a
+ * one-shot clip that reached its end reports exactly its duration (not 0), and a rewound clip is
+ * allowed to resume from the terminus it stopped at rather than needing a fresh {@code play()} that
+ * would snap it back to the start.
+ *
  * <h2>Driving individual parts</h2>
  * {@link #node(String)} addresses one node and holds per-node overrides - rotation, translation,
  * scale, visibility - that are re-applied on top of the animation every frame, so a driven part
@@ -207,6 +233,60 @@ public final class ModelInstance {
 
     public void stopAnimation() {
         animationState.stop();
+    }
+
+    // ------------------------------------------------------------------
+    // Playback rate, clock position and the open/close recipe
+    // ------------------------------------------------------------------
+
+    /**
+     * Scales the current clip's own rate: 1 is the file's rate, 0 freezes the pose, and a
+     * <b>negative</b> value plays the clip backwards.
+     *
+     * <p>Read on every {@link #update(float)}, so changing it mid-flight reverses from the clock's
+     * current position rather than restarting: a door half open closes from half open, which is the
+     * whole reason a signed rate exists. Nothing here touches the clip's position or its looping
+     * flag.
+     *
+     * <p>Non-finite values (NaN, ±infinity) are <b>ignored</b>, leaving the previous rate in force.
+     * Two reasons: {@code Math.max(0.0f, NaN)} is NaN, so a clamp could not have guarded this, and
+     * an infinite rate would make the next step land on a terminus and read as "the animation
+     * jumped" rather than as a bad argument. Values other than those two cases are not restricted -
+     * a rate of 4 is four times as fast, and the step cap still applies per update.
+     *
+     * <p>The rate is <b>sticky</b>: {@link #play(String, boolean)} does not reset it, so a caller
+     * that opens with +1 and closes with -1 sets it once per transition and not per frame. It also
+     * survives {@link #stopAnimation()}, which is deliberate - the value is a setting, not a
+     * property of the clip that happened to be loaded.
+     */
+    public void setPlaybackSpeed(float speed) {
+        animationState.setSpeed(speed);
+    }
+
+    /** The rate set by {@link #setPlaybackSpeed}; 1.0 until a caller changes it. */
+    public float playbackSpeed() {
+        return animationState.speed();
+    }
+
+    /**
+     * Seconds into the current clip, always inside {@code [0, animationDuration()]}.
+     *
+     * <p>Wrapped, so a looping clip reports a position inside the clip rather than a running total:
+     * this is a playhead, not an odometer, and the number is meant to be compared against
+     * {@link #animationDuration()}.
+     *
+     * <p>{@code 0} when no clip is attached - never played, or after {@link #stopAnimation()}. A
+     * one-shot clip that has run to its end reports exactly {@link #animationDuration()}, which is
+     * what makes the "run to the end and hold" recipe in the class comment expressible; reporting 0
+     * there would make a finished clip indistinguishable from an unplayed one.
+     */
+    public float animationTime() {
+        return animationState.animation() == null ? 0.0f : animationState.time();
+    }
+
+    /** The current clip's length in seconds, or {@code 0} when no clip is attached. */
+    public float animationDuration() {
+        return animationState.duration();
     }
 
     // ------------------------------------------------------------------
@@ -484,16 +564,25 @@ public final class ModelInstance {
      * model animates, just at half the expected rate, which reads as a wrong animation speed
      * rather than as a clamped clock. It cost one debugging round in this project's own
      * integration test, which asserted an exact pose after a single 0.5 s step.
+     *
+     * <h2>The step's direction comes from playbackSpeed, not from the sign of the delta</h2>
+     * An update step is an elapsed time and is never negative; a rewind is expressed with
+     * {@link #setPlaybackSpeed(float)}, so a negative {@code deltaSeconds} is discarded exactly as
+     * it always was. The clamp above is applied to the <i>elapsed</i> time before the rate
+     * multiplies it, so a rate of 2 does not buy a longer step - it moves twice as far within the
+     * same 0.25 s budget.
      */
     public void update(float deltaSeconds) {
         if (scene == null) {
             return;
         }
         AnimationState state = animationState;
-        boolean clockMoved = state.isPlaying() && !state.isPaused();
-        if (clockMoved) {
-            state.advance(deltaSeconds);
-        }
+        // No "is it playing" test here any more: AnimationState#advance owns that decision, and it
+        // has to, because its answer now depends on the direction. A clip that ran to the end of a
+        // one-shot is not playing, yet a negative rate must still move it - deciding that here
+        // would silently drop the rewind that closes the model. Everything else is unchanged:
+        // advance() is a no-op when paused, when no clip is attached, or when nothing was started.
+        state.advance(deltaSeconds);
         // Always go through AnimationPlayer, including for a model with no animation attached.
         // An earlier revision short-circuited to ModelScene.updateWorldTransforms here, which was
         // cheaper but left pose.worldMatrices() zero-filled - and AnimationPose documents those

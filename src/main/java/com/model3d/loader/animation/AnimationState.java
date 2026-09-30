@@ -12,6 +12,11 @@ import com.model3d.loader.scene.ModelAnimation;
  *
  * <p>Time is in seconds and advances only through {@link #advance(float)}, never by reading a
  * clock inside this class - so a paused game, a lag spike and a unit test all behave the same.
+ *
+ * <p><b>The clock is signed.</b> {@link #setSpeed(float)} accepts a negative rate and the clock
+ * then runs towards zero, wrapping at both ends of the clip. See {@link #advance(float)} for the
+ * direction rules; they exist because a lid that opens forwards has to close from wherever it
+ * currently is, not by replaying a different clip.
  */
 public final class AnimationState {
 
@@ -20,9 +25,9 @@ public final class AnimationState {
     private float speed = 1.0f;
     private boolean looping = true;
     private boolean playing;
-    /** Set when a non-looping animation reached its end; cleared by {@link #play}. */
+    /** Set when a one-shot animation stopped at a terminus; cleared by {@link #play}. */
     private boolean finished;
-    /** Number of times playback crossed the end, for one-shot animations. */
+    /** Number of times playback crossed a terminus (the end forwards, the start backwards). */
     private int completionCount;
     /** Freeze-frame flag: the pose stops updating but the current pose is kept. */
     private boolean paused;
@@ -32,7 +37,7 @@ public final class AnimationState {
         return playing;
     }
 
-    /** True when a one-shot animation has run to its end. */
+    /** True when a one-shot animation has run to the end, or been run back to the start. */
     public boolean isFinished() {
         return finished;
     }
@@ -49,13 +54,32 @@ public final class AnimationState {
         this.looping = looping;
     }
 
-    /** Playback rate multiplier; 0 freezes, negative plays backwards is NOT supported (clamped to 0). */
+    /**
+     * Playback rate multiplier: 1 is the clip's own rate, 0 freezes the clock, and a negative
+     * value runs it backwards.
+     *
+     * <p>This used to be clamped to {@code >= 0} and documented as "negative is not supported".
+     * That clamp was the reason a consumer could not close what it had opened: a clip that plays a
+     * lid forward has no closing clip to play in reverse, so a reverse rate on the <i>same</i>
+     * clip is the only way to express "put it back", and a clamp to zero turns that into a model
+     * frozen in mid-air. Measured on the fixture: with the old clamp, setting -1 and stepping
+     * moved the clock by 0.0 for every step, silently.
+     *
+     * <p>Non-finite values are <b>ignored</b> rather than clamped: {@code Math.max(0, NaN)} is NaN
+     * (so the old clamp did not even guard this), an infinite rate would jump the clock to the
+     * terminus on the next step, and neither is something a caller can have meant. Ignoring leaves
+     * the previous rate in force, which is the recoverable state.
+     */
     public float speed() {
         return speed;
     }
 
+    /** Sets the playback rate; see {@link #speed()} for the sign and non-finite rules. */
     public void setSpeed(float speed) {
-        this.speed = Math.max(0.0f, speed);
+        if (!Float.isFinite(speed)) {
+            return;
+        }
+        this.speed = speed;
     }
 
     /** Current position in seconds, always within {@code [0, duration]} while playing. */
@@ -91,6 +115,10 @@ public final class AnimationState {
 
     /**
      * Starts (or restarts) {@code animation}.
+     *
+     * <p>The rate is deliberately <b>not</b> reset here: {@code play} is "start this clip", and a
+     * caller that has set a reverse rate to close something keeps it. {@link #setSpeed} documents
+     * why the rate is the caller's business.
      *
      * @param behind true the animation is not a fresh start but a late join: the clock is
      *               advanced to a phase derived from the joining client's own world time, so two
@@ -148,8 +176,8 @@ public final class AnimationState {
     public static final float MAX_STEP_SECONDS = 0.25f;
 
     /**
-     * Advances the clock by {@code deltaSeconds}. No-op when stopped, paused, or when the
-     * current animation has a zero duration.
+     * Advances the clock by {@code deltaSeconds} times the current {@link #speed()}. No-op when
+     * paused, when the current animation has a zero duration, or when nothing has been started.
      *
      * <p>A large delta (a lag spike, a debugger pause, or a test stepping by half a second) is
      * clamped to {@link #MAX_STEP_SECONDS}. Stepping a looping animation by a minute would
@@ -166,26 +194,58 @@ public final class AnimationState {
      * NaN, so an unguarded NaN would make the clock NaN, and a NaN clock collapses every sampled
      * keyframe to the first one - a model frozen in its bind pose with nothing in the log to say
      * why.
+     *
+     * <h2>Direction</h2>
+     * The sign of the movement comes from {@link #speed()}, never from the delta: an update step is
+     * an elapsed time, so a negative delta is not a rewind and is discarded the way it always was.
+     * The clock then wraps at <b>both</b> ends - a looping clip played past its end continues from
+     * zero, and one played before its start continues from its duration - which is what makes
+     * "reverse from wherever it is now" a continuous operation rather than one that needs the caller
+     * to notice a boundary and jump.
+     *
+     * <h2>Reverse playback, and the one-shot case</h2>
+     * A non-looping clip stops at the terminus it reached ({@code playing = false},
+     * {@code finished = true}, clock exactly at the terminus). Setting a speed that leaves that
+     * terminus resumes the movement from it, which is what the open/close recipe needs:
+     * <pre>
+     *   play(clip, false); setSpeed(+1);   // forward, then the caller sets speed 0 at the end
+     *   setSpeed(-1);                      // and this runs it back down to 0
+     * </pre>
+     * Pushing <i>further into</i> the terminus it already sits on stays the no-op it was, so a
+     * caller that keeps advancing a finished clip at speed +1 does not accumulate completions.
+     * A clip that was never started is also not resumed by a speed alone: {@code stop()} must stay
+     * a stop, or a stale speed would restart playback on the next frame.
      */
     public void advance(float deltaSeconds) {
-        if (!playing || paused || animation == null) {
+        if (paused || animation == null) {
             return;
         }
-        if (!Float.isFinite(deltaSeconds)) {
+        if (!Float.isFinite(deltaSeconds) || deltaSeconds <= 0.0f) {
             return;
         }
         float duration = animation.duration();
         if (duration <= 0.0f) {
             return;
         }
-        float delta = Math.min(deltaSeconds, MAX_STEP_SECONDS) * speed;
-        if (delta <= 0.0f) {
+        if (!playing && !finished) {
             return;
         }
-        time += delta;
+        float step = Math.min(deltaSeconds, MAX_STEP_SECONDS) * speed;
+        if (step == 0.0f) {
+            return;
+        }
+        if (!playing) {
+            boolean atEnd = time >= duration;
+            if ((atEnd && step > 0.0f) || (!atEnd && step < 0.0f)) {
+                return;
+            }
+            finished = false;
+            playing = true;
+        }
+        time += step;
         if (time >= duration) {
             if (looping) {
-                time = time % duration;
+                time = wrapInto(time, duration);
                 completionCount++;
             } else {
                 time = duration;
@@ -193,10 +253,34 @@ public final class AnimationState {
                 finished = true;
                 completionCount++;
             }
+        } else if (time < 0.0f) {
+            if (looping) {
+                time = wrapInto(time, duration);
+                completionCount++;
+            } else {
+                time = 0.0f;
+                playing = false;
+                finished = true;
+                completionCount++;
+            }
         }
     }
 
-    /** How many times playback has crossed the end. Lets a caller chain one-shot animations. */
+    /**
+     * Folds {@code time} into {@code [0, duration)}.
+     *
+     * <p>Written out rather than using {@code time % duration} alone because Java's remainder keeps
+     * the dividend's sign: {@code -0.1f % 2.0f} is {@code -0.1f}, so a rewind past the start would
+     * leave the clock negative and the sampler would clamp to the clip's first keyframe - a lid
+     * that snaps shut instead of continuing from the end. That is the same answer a caller would get
+     * from a missing wrap, which is why this is easy to miss on a forward-only test.
+     */
+    private static float wrapInto(float time, float duration) {
+        float wrapped = time % duration;
+        return wrapped < 0.0f ? wrapped + duration : wrapped;
+    }
+
+    /** How many times playback has crossed a terminus. Lets a caller chain one-shot animations. */
     public int completionCount() {
         return completionCount;
     }
