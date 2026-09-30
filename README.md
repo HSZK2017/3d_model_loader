@@ -289,7 +289,7 @@ The public surface is:
 | `com.model3d.loader.api` | `ModelCarrier`, `ModelSync`, `ModelHandle`, `ModelSummary`, `ModelInstance`, `ModelScale`, `ModelBounds` |
 | `com.model3d.loader.resource.ModelLoadService` | loading, releasing, and the folder/layout accessors |
 | `com.model3d.loader.client.ClientModelManager`, `client.render.VanillaModelRenderer` | the client entry points: the instance per entity, and the draw |
-| `com.model3d.loader.tools` | offline tools: model inspection and the synthetic-fixture generator |
+| `com.model3d.loader.tools` | offline tools: model inspection, the synthetic-fixture generator, and the event-bus checker (`EventBusCheckTool` - point it at your own compiled classes; a subscriber on the wrong bus is never called, silently) |
 | `com.model3d.loader.Model3D` | the mod id and its logger |
 
 Everything else - `format`, `scene`, `math`, `json`, `animation`, `client.gl`, and `resource` apart

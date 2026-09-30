@@ -67,6 +67,24 @@ public final class VanillaModelRenderer {
     }
 
     /**
+     * Frees the GPU resources of <b>one</b> model: its VAO and stream buffer.
+     *
+     * <p>Bulk teardown is not enough on its own. The mesh map is keyed by model id and lives until a
+     * resource reload or a level unload, so a client that sees many models - the model folder is a
+     * drop-in directory, and the viewer can spend an hour cycling through it - keeps one VAO and VBO
+     * per model it has ever drawn. Nothing in the scene knows how many entities still use a model, so
+     * the release has to come from whoever owns that decision: the client's model cache calls this
+     * when it evicts a model's last instance.
+     *
+     * <p>Safe to call for a model that was never drawn: the map simply has no entry.
+     */
+    public void releaseModel(ResourceLocation modelId) {
+        if (modelId != null) {
+            ModelCpuRenderPath.dispose(modelId.toString());
+        }
+    }
+
+    /**
      * Draws {@code instance} with the placement already on {@code poseStack}.
      *
      * @return true when at least one primitive was submitted

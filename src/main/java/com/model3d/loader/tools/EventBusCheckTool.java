@@ -1,4 +1,4 @@
-package com.model3d.loader.verify;
+package com.model3d.loader.tools;
 
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 
@@ -48,8 +48,19 @@ import java.util.stream.Stream;
  * types without initialising them.
  *
  * <p>Exit code 0 when every subscriber is consistent, 1 otherwise, with each offending method named.
+ *
+ * <h2>Using this from another mod</h2>
+ * It is shipped in the jar for exactly that: any mod that registers event subscribers has this failure
+ * mode, and it is invisible at runtime. Point it at your own compiled classes - as an argument, or
+ * through the {@link #CLASSES_PROPERTY} system property - and it reports every class whose declared
+ * bus cannot deliver the events it subscribes to.
+ *
+ * <pre>
+ *   java -cp &lt;your runtime classpath&gt; com.model3d.loader.tools.EventBusCheckTool build/classes/java/main
+ * </pre>
  */
-public final class EventBusCheck {
+
+public final class EventBusCheckTool {
 
     /** System property giving the compiled classes directory; set by the Gradle task. */
     public static final String CLASSES_PROPERTY = "model3d.verify.classes";
@@ -64,13 +75,18 @@ public final class EventBusCheck {
     private static int methodsChecked;
     private static int failures;
 
-    private EventBusCheck() {
+    private EventBusCheckTool() {
     }
 
     public static void main(String[] args) throws IOException {
-        System.out.println("=== Model3D event bus check ===");
-        Path classes = Path.of(System.getProperty(CLASSES_PROPERTY,
-                "build/classes/java/main")).toAbsolutePath().normalize();
+        System.out.println("=== event bus check ===");
+        // The directory to scan: the first argument, else the system property, else the conventional
+        // Gradle output path. An argument is what lets another mod use this without a property.
+        String configured = args.length > 0 && !args[0].isBlank()
+                ? args[0]
+                : System.getProperty(CLASSES_PROPERTY, "build/classes/java/main");
+        Path classes = Path.of(configured).toAbsolutePath().normalize();
+
         if (!Files.isDirectory(classes)) {
             System.out.println("RESULT: FAIL - compiled classes not found at " + classes);
             System.exit(1);
@@ -81,7 +97,7 @@ public final class EventBusCheck {
         try {
             // initialize=false: loading is enough to ask isAssignableFrom, and initialising it would
             // reach for Forge's bus bindings and fail outside a game.
-            modBusMarker = Class.forName(MOD_BUS_EVENT, false, EventBusCheck.class.getClassLoader());
+            modBusMarker = Class.forName(MOD_BUS_EVENT, false, EventBusCheckTool.class.getClassLoader());
         } catch (ClassNotFoundException e) {
             System.out.println("RESULT: FAIL - cannot load " + MOD_BUS_EVENT + ": " + e.getMessage());
             System.exit(1);
@@ -139,7 +155,7 @@ public final class EventBusCheck {
             // initialize=false: @SubscribeEvent and the event parameter types are readable from the
             // metadata without running any static initialiser, which is what keeps this usable
             // outside a game.
-            type = Class.forName(className, false, EventBusCheck.class.getClassLoader());
+            type = Class.forName(className, false, EventBusCheckTool.class.getClassLoader());
         } catch (Throwable t) {
             return;
         }

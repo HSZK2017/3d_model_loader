@@ -133,10 +133,6 @@ public final class ModelLocation {
         return ASSETS_ROOT + "/" + namespace + "/" + TEXTURE_ROOT;
     }
 
-    /** {@code <ns>:model3d/<name>} - the {@link ResourceLocation} a {@code ResourceManager} is asked for. */
-    public ResourceLocation rootResource() {
-        return Ids.of(namespace, MODEL3D_ROOT + "/" + name);
-    }
 
     /**
      * The {@link ResourceLocation} for a model-relative path, or null instead of throwing when the
@@ -173,10 +169,6 @@ public final class ModelLocation {
                 : Ids.parse(namespace + ":" + path.toLowerCase(java.util.Locale.ROOT));
     }
 
-    /** The conventional descriptor file name for this model. */
-    public String descriptorPath() {
-        return modelRootPath() + "/" + ModelDescriptor.FILE_NAME;
-    }
 
     @Override
     public String toString() {

@@ -506,12 +506,16 @@ tasks.register('modelProbe', JavaExec) {
 // silently. That shipped: the entity renderer was never registered and the client crashed with
 // "Cannot invoke EntityRenderer.render(...) because entityrenderer is null" the first time it drew
 // the entity. The property is static, so it is checked here with no game involved.
+//
+// The checker now lives in src/main (com.model3d.loader.tools.EventBusCheckTool) and is shipped, so
+// the companion test mod - which owns three subscriber classes of its own - can point it at its own
+// compiled classes with the same verdict.
 tasks.register('eventBusCheck', JavaExec) {
     group = 'verification'
     description = 'Verifies every @Mod.EventBusSubscriber subscribes to events its declared bus carries.'
     dependsOn 'compileJava', 'processResources'
     classpath = sourceSets.verify.runtimeClasspath
-    mainClass = 'com.model3d.loader.verify.EventBusCheck'
+    mainClass = 'com.model3d.loader.tools.EventBusCheckTool'
     systemProperty 'model3d.verify.classes',
             layout.buildDirectory.dir('classes/java/main').get().asFile.absolutePath
     outputs.upToDateWhen { false }

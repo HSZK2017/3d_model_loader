@@ -134,16 +134,6 @@ public final class ClasspathModelSource extends AbstractModelSource {
         return resourcePrefix;
     }
 
-    /** Reports whether anything is visible at this prefix; used by diagnostics, never by loading. */
-    public boolean isEmpty() {
-        try {
-            return listRelativeFiles().isEmpty();
-        } catch (IOException e) {
-            Model3D.LOGGER.debug("Model3D: classpath listing of {} failed: {}", resourcePrefix,
-                    e.getMessage());
-            return true;
-        }
-    }
 
     @Override
     public String toString() {

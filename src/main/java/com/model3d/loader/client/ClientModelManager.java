@@ -142,6 +142,33 @@ public final class ClientModelManager {
     }
 
     /** Gives back a reference taken by {@link #handleFor}. */
+    /**
+     * Evicts one entity's entry: drops its handle reference and, when it was the last instance of
+     * that model, frees the model's GPU resources.
+     *
+     * <p>The mesh is keyed by model id and shared by every entity using that model, so freeing it
+     * unconditionally would delete the stream buffer another entity is still drawing from. The check
+     * therefore runs against the entries that remain, which is why callers remove the entry from the
+     * map <b>before</b> calling this.
+     *
+     * <p>Without this, a per-model VAO and VBO lived until a resource reload or a level unload: the
+     * model folder is a drop-in directory, so a session that cycles through many models leaks one
+     * buffer per model it has ever drawn. Nothing in the scene knows how many entities still use it -
+     * the count lives in the cache, which is why the release belongs here.
+     */
+    private void evict(Entry entry) {
+        entry.releaseHandle();
+        ResourceLocation modelId = entry.modelId;
+        if (modelId == null) {
+            return;
+        }
+        for (Entry remaining : entries.values()) {
+            if (modelId.equals(remaining.modelId)) {
+                return;
+            }
+        }
+        vanillaRenderer.releaseModel(modelId);
+    }
     public void releaseHandle(ResourceLocation modelId) {
         if (modelId != null) {
             ModelLoadService.INSTANCE.releaseClient(modelId);
@@ -175,8 +202,8 @@ public final class ClientModelManager {
         }
         // A different model on an existing entity: swap the instance and move the handle reference.
         if (existing != null) {
-            existing.releaseHandle();
             entries.remove(entity.getId());
+            evict(existing);
         }
         ModelHandle handle = handleFor(modelId);
         if (handle == null) {
@@ -297,8 +324,10 @@ public final class ClientModelManager {
             Entry entry = mapped.getValue();
             net.minecraft.world.entity.Entity entity = minecraft.level.getEntity(mapped.getKey());
             if (entity == null || entity.isRemoved()) {
-                entry.releaseHandle();
+                // Remove from the map first: evict() frees the mesh only when no other entry is
+                // still drawing that model, and it has to see the state after this removal.
                 iterator.remove();
+                evict(entry);
                 continue;
             }
             if (entry.broken) {
@@ -320,12 +349,12 @@ public final class ClientModelManager {
                 // marker - visible, and clearly "this model is not rendering" rather than a
                 // half-animated wreck or a crash loop.
                 entry.broken = true;
-                entry.releaseHandle();
                 // iterator.remove(), not entries.remove(key): this is a fail-fast HashMap inside the
                 // loop started above, so a direct removal makes the next next() throw
                 // ConcurrentModificationException out of the render-stage handler - the one path
                 // that is supposed to contain a broken model rather than break the frame.
                 iterator.remove();
+                evict(entry);
                 Model3D.LOGGER.error("Model3D: animating entity {} with model {} failed; falling "
                         + "back to the pig marker", mapped.getKey(), entry.modelId, e);
             }

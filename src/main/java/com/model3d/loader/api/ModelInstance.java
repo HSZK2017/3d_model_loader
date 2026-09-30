@@ -72,6 +72,30 @@ public final class ModelInstance {
     /** Incremented whenever the pose is resampled; renderers cache skinned vertices per generation. */
     private int poseGeneration;
 
+    /**
+     * An instance of {@code handle}'s model, named after it.
+     *
+     * <p>The way to build one without naming a scene: the constructor below takes the parsed scene,
+     * whose type is internal, so a caller can invoke it but cannot declare its parameter. This factory
+     * takes the handle the API handed out and does the rest.
+     *
+     * <p>Most callers do not need it: {@code ClientModelManager#instanceFor} creates, configures and
+     * advances an instance per entity, which is what the render path expects. Build one directly for
+     * something that is not an entity - a preview, a tool, a test.
+     */
+    public static ModelInstance of(ModelHandle handle) {
+        if (handle == null) {
+            throw new IllegalArgumentException("ModelInstance.of(null handle)");
+        }
+        return new ModelInstance(handle.scene(), handle.name());
+    }
+
+    /**
+     * An instance of {@code scene}.
+     *
+     * <p>{@code ModelScene} is internal shape: prefer {@link #of(ModelHandle)} unless you are inside
+     * this mod, where the scene is already in hand.
+     */
     public ModelInstance(ModelScene scene, String instanceName) {
         this.instanceName = instanceName;
         setScene(scene);
