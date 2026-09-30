@@ -1,0 +1,52 @@
+# Gradle
+.gradle/
+build/
+run-data/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Run directory: the dev client/server working directory. Contains the unpacked models the
+# acceptance test uses, which are third-party assets and must not be committed.
+run/
+
+# Model assets. This is an API mod: it ships no geometry, no textures and no sample models.
+# models/ is a local convenience folder for the developer's own test files - drop a model in,
+# run the acceptance test against it, and it stays out of the repository. The build does not
+# need it: linkSampleModels prints one line and skips when the folder is absent, and the
+# corpus tests skip unless -Dmodel3d.corpus points at a directory.
+models/
+*.glb
+*.gltf
+*.fbx
+*.obj
+*.mtl
+*.usdz
+*.vrm
+*.pmx
+*.pmd
+*.zip
+
+# Extraction of the mapped Forge sources used to verify vanilla signatures. Derived data;
+# regenerate by extracting ...-sources.jar from the ForgeGradle cache.
+.mc-sources/
+
+# Out-of-band javac output used to type-check the Forge-free packages.
+.tools-build/
+
+# Logs and screenshots: run output, not source. The dev client writes logs/ and run/screenshots/,
+# and a diagnostic run can redirect a full console log to the tree.
+logs/
+*.log
+*.log.gz
+screenshots/
+
+# Scratch space for one-off probes, captures and generated test fixtures.
+build/tmp/
+.tmp/
+*.tmp
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.eclipse/
+bin/

@@ -1,0 +1,602 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'net.minecraftforge.gradle' version '[6.0.16,6.2)'
+    id 'org.parchmentmc.librarian.forgegradle' version '1.+'
+}
+
+group = mod_group_id
+
+base {
+    archivesName = "${mod_id}-${minecraft_version}-${mod_version}"
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(17)
+}
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+    copyIdeResources = true
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
+        }
+        client {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            // Opt-in client acceptance run: joins a world, spawns the test entity, holds it for a
+            // few seconds and quits. This is the only check that exercises the render path inside a
+            // real client, which is where a JVM-level fault survived every headless check.
+            //   gradlew runClient -Pmodel3dClientTest=model3d:animated_test
+            //
+            // The world name can be overridden for a one-off run:
+            //   -Pmodel3dClientWorld=someWorld
+            if (project.hasProperty('model3dClientTest')) {
+                jvmArgs "-Dmodel3d.clientTest=${project.property('model3dClientTest')}"
+                // A window big enough for the GUI scale this display resolves to.
+                //
+                // The previous 854x480 default was too small: with guiScale left on "auto", Minecraft
+                // derives the scale from the window size against the monitor's DPI, and on this machine
+                // that produced a GUI whose font was one character per line. The Game Menu then opened on
+                // focus loss and could not be clicked out of, which read as a hung client and cost an
+                // hour of misdirected effort. 1280x720 gives the auto-scaler room to pick a readable 2.
+                args '--width', '1280', '--height', '720'
+                // Optional: a mode folder the client writes into the model folder mid-session, to
+                // prove hot reload picks up a model that did not exist at startup.
+                if (project.hasProperty('model3dClientTestHotWrite')) {
+                    jvmArgs "-Dmodel3d.clientTestHotWrite=${project.property('model3dClientTestHotWrite')}"
+                }
+                // Optional: spawn distance in blocks, to make "I cannot see it" reproducible.
+                if (project.hasProperty('model3dClientTestDistance')) {
+                    jvmArgs "-Dmodel3d.clientTestDistance=${project.property('model3dClientTestDistance')}"
+                }
+                // Optional: the render path's own diagnostic flags. They are system properties read at
+                // class-init time, so they have to be on the JVM command line - and
+                // `gradlew runClient -Dmodel3d.traceDraw=true` does NOT work, because Gradle consumes
+                // -D itself and the game never sees it. Measured: a traced run that printed nothing at
+                // all looked exactly like a render path that was never entered.
+                //   gradlew runClient -Pmodel3dClientTest=... -Pmodel3dTraceDraw=true
+                if (project.hasProperty('model3dTraceDraw')) {
+                    jvmArgs "-Dmodel3d.traceDraw=${project.property('model3dTraceDraw')}"
+                }
+                // Quick play is what makes this unattended: without it the client sits on the title
+                // screen and the render path is never reached, which is a silent no-op that still
+                // exits 0 and would read as a pass.
+                args '--quickPlaySingleplayer',
+                        project.hasProperty('model3dClientWorld')
+                                ? project.property('model3dClientWorld') : 'world'
+            }
+        }
+        server {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            args '--nogui'
+            // Opt-in dedicated-server acceptance run. Pass the model to exercise:
+            //   gradlew runServer -Pmodel3dSelfTest=model3d:animated_test
+            // Lower-case -P on purpose: -D after a task name is parsed by Gradle as a task
+            // argument ("Cannot locate tasks that match '.selfTest=...'"), which is a confusing
+            // way to fail for a test hook, so the project property is the documented spelling.
+            if (project.hasProperty('model3dSelfTest')) {
+                jvmArgs "-Dmodel3d.selfTest=${project.property('model3dSelfTest')}"
+            }
+        }
+        gameTestServer {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+        data {
+            workingDirectory project.file('run-data')
+            args '--mod', mod_id, '--all', '--output', file('src/generated/resources/'), '--existing', file('src/main/resources/')
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+// ---------------------------------------------------------------------------
+// Mod metadata
+// ---------------------------------------------------------------------------
+// mods.toml is a TEMPLATE, not a resource. The placeholders in it (${mod_id}, ${mod_version},
+// ...) are not a Forge feature - Forge reads the file as literal TOML - so a copy left in
+// src/main/resources ships unexpanded and the game dies at boot with
+// `ParsingException: Invalid bare key: ${mod_id}`. That is exactly what happened here before this
+// task existed, and it was only caught by actually launching a server.
+//
+// Keeping the template in src/main/templates and expanding it in a separate output directory
+// (rather than expanding src/main/resources in place) means the source file keeps its
+// placeholders, so the failure cannot come back by someone editing the wrong copy.
+def modMetadataProperties = [
+        minecraft_version      : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        forge_version          : forge_version,
+        forge_version_range    : forge_version_range,
+        loader_version_range   : loader_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+        mod_description        : mod_description,
+]
+
+def generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    description = 'Expands the mods.toml template into the resource tree.'
+    group = 'build'
+    inputs.properties(modMetadataProperties)
+    expand(modMetadataProperties)
+    from 'src/main/templates'
+    into layout.buildDirectory.dir('generated/sources/modMetadata')
+}
+
+sourceSets.main.resources.srcDir generateModMetadata
+// `legacyForge` is ModDevGradle's extension; this project is on ForgeGradle 6, where the IDE sync
+// is `minecraft.ideSyncTask`. Wired through `afterEvaluate` because ForgeGradle creates that task
+// late in configuration, so referencing it here directly fails with "task not found".
+afterEvaluate {
+    tasks.findByName('ideSync')?.dependsOn(generateModMetadata)
+}
+
+// ---------------------------------------------------------------------------
+// Test asset wiring
+// ---------------------------------------------------------------------------
+// The real Sukhoi Su-30 sample is third-party licensed material and lives outside the jar, but
+// the acceptance path has to be able to name it. This task exposes it under the dev run directory
+// as `model3d:su30` using a directory junction, so the model is not copied and the test tree
+// stays free of assets that must not be committed. Re-running is idempotent.
+//
+// Windows-only by construction (mklink /J). On any other platform it is skipped with a message
+// rather than failing the build: the model is only needed for a manual in-game check, and the
+// data half of the mod is verified by `test` and `modelInspect`, not by this.
+tasks.register('linkSampleModels') {
+    group = 'verification'
+    description = 'Exposes models/ under run/model3d/model3d/ so the sample Su-30 is loadable as model3d:su30.'
+    def sampleSource = layout.projectDirectory.dir('models/sukhoi-su-30-flanker-c')
+    def linkParent = layout.projectDirectory.dir('run/model3d/model3d')
+    def linkPath = layout.projectDirectory.file('run/model3d/model3d/su30')
+    // Only the source directory is an input: the junction target is a fresh path each run, so
+    // declaring the output would make Gradle delete a source tree on the first stale check.
+    //
+    // Declared lazily and only when it exists. `inputs.dir(missingPath)` is a task-configuration
+    // failure - "Gradle detected a problem with the following location" - which the doLast guard
+    // below never gets a chance to handle, and a fresh clone has no models/ at all: the repository
+    // ships no model assets. Measured: runClient depends on this task, so a clone without models/
+    // could not start the client until this became tolerant of absence.
+    inputs.files(providers.provider {
+        sampleSource.asFile.isDirectory() ? [sampleSource] : []
+    })
+    doLast {
+        if (!org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+            logger.lifecycle("linkSampleModels: skipped (needs a Windows directory junction). " +
+                    "Copy models/sukhoi-su-30-flanker-c to run/model3d/model3d/su30/ manually.")
+            return
+        }
+        def source = sampleSource.asFile
+        if (!source.isDirectory()) {
+            logger.lifecycle("linkSampleModels: ${source} is absent; nothing to link.")
+            return
+        }
+        def parent = linkParent.asFile
+        parent.mkdirs()
+        def link = linkPath.asFile
+        if (link.exists()) {
+            logger.lifecycle("linkSampleModels: ${link} already present.")
+            return
+        }
+        def result = providers.exec {
+            commandLine 'cmd', '/c', 'mklink', '/J', link.absolutePath, source.absolutePath
+            ignoreExitValue = true
+        }
+        if (result.result.get().exitValue != 0) {
+            logger.lifecycle("linkSampleModels: junction failed; copy manually if you want the " +
+                    "sample model in game. The automated checks do not need it.")
+        }
+    }
+}
+
+// ForgeGradle creates the run tasks late in configuration, so a `tasks.named('runClient')` here
+// would fail with "task not found" while the script is still being evaluated. `configureEach`
+// registers the hook without requiring the task to exist yet.
+tasks.matching { it.name == 'runClient' || it.name == 'runServer' }.configureEach {
+    dependsOn 'linkSampleModels'
+}
+
+// Kept as a Gradle-level constant so the generator task and the resource path cannot drift:
+// the string also appears in TestModelGenerator.DEFAULT_OUTPUT, and editing one without the other
+// would put the fixture where processResources does not look.
+//
+// `data/`, not `assets/`: a dedicated server's resource manager is PackType.SERVER_DATA, so it
+// serves data/ and never assets/ - a fixture under assets/ would be invisible to the very command
+// that exercises it. Measured on a live server: listResources("loot_tables")=1091,
+// listResources("models")=0.
+def TestModelGenerator_DEFAULT_OUTPUT =
+        'src/main/resources/data/model3d/model3d/animated_test/model.glb'
+
+// ---------------------------------------------------------------------------
+// Offline model inspection
+// ---------------------------------------------------------------------------
+// A runtime GPU path cannot be exercised without opening a window, so the parts
+// that CAN be checked without one are checked here: parse a real model and print
+// its geometry, node tree, skin and animation inventory. Same parser classes the
+// mod runs, driven from a main() so a change in the parser is visible as a diff
+// in this output rather than only as something that looks wrong on screen.
+//
+// Classpath note, and it applies to both JavaExec tasks below. These tasks are declared as
+// dependencies of processResources, so their classpath must not carry a builtBy edge back to
+// `classes` (which depends on processResources) - that is a cycle, and it fails EVERY test/build
+// invocation, not just the wiring being added:
+//
+//     classes -> processResources -> generateTestModel -> classes
+//
+// Two traps here, both hit while writing this:
+//   * `sourceSets.main.runtimeClasspath` expands to `classes` + runtime deps. Cycle.
+//   * `sourceSets.main.output` also expands to `classes`. Cycle.
+// `sourceSets.main.output.classesDirs` is the compiled classes only, with no builtBy on
+// processResources, and `compileJava` does not depend on processResources either. The resources
+// are deliberately absent: neither tool reads them.
+def toolClasspath = sourceSets.main.output.classesDirs + configurations.compileClasspath
+
+tasks.register('modelInspect', JavaExec) {
+    group = 'verification'
+    description = 'Parse a 3D model offline and dump geometry/node/animation statistics.'
+    dependsOn 'compileJava'
+    classpath = toolClasspath
+    mainClass = 'com.model3d.loader.tools.ModelInspectTool'
+    // Args are a model path plus an optional format override; override on the CLI:
+    //   gradlew modelInspect --args="models/foo/source/bar.glb"
+
+    if (!project.hasProperty('model3dInspectArgs')) {
+        args = []
+    } else {
+        args = project.property('model3dInspectArgs').split('\\s+')
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic animated fixture
+// ---------------------------------------------------------------------------
+// The third-party corpus in this repository holds no animation and no skin data (all five
+// glTF/GLB files have zero `animations` and `skins` keys), so the two features this mod exists
+// for have no real asset to exercise them. This task generates the missing fixture from
+// reviewable source instead of committing an unreproducible binary blob: the expected geometry
+// is stated in TestModelGenerator's javadoc, the test that consumes it asserts those values, and
+// the fixture can be regenerated or reshaped at will.
+tasks.register('generateTestModel', JavaExec) {
+    group = 'build'
+    description = 'Regenerates the synthetic skinned+animated GLB used as the animation test fixture.'
+    dependsOn 'compileJava'
+    classpath = toolClasspath
+    mainClass = 'com.model3d.loader.tools.TestModelGenerator'
+    args = project.hasProperty('model3dTestModelOutput')
+            ? [project.property('model3dTestModelOutput')]
+            : [TestModelGenerator_DEFAULT_OUTPUT]
+    // The generated file lands in src/main/resources, so processResources must not read the tree
+    // until it is complete. The dependency direction is one-way on purpose: processResources
+    // depends on this task, never the reverse.
+    outputs.file(layout.projectDirectory.file(TestModelGenerator_DEFAULT_OUTPUT))
+}
+
+// The generated fixture is a *source* input of processResources, not a build artefact of it, so
+// it must exist before the resource copy runs rather than the other way round. See the classpath
+// note above for why this edge is acyclic.
+tasks.named('processResources') { dependsOn 'generateTestModel' }
+
+// ---------------------------------------------------------------------------
+// Classpath file index for pack-hosted models
+// ---------------------------------------------------------------------------
+// A classloader cannot enumerate a directory, and a ForgeGradle development server has been
+// observed to enumerate a mod resource it then refuses to open (listResources finds the file,
+// getResource returns empty - see ClasspathModelSource). So the loader needs a manifest of a
+// model's sibling files that does not depend on either capability.
+//
+// This writes `files.txt` beside each model: one `/`-separated path per line, relative to the
+// model directory, comments with '#'. It is generated rather than hand-maintained for the obvious
+// reason - a stale index lists a texture that is gone, and the failure looks like a parser bug.
+//
+// Only models under src/main/resources/data and src/main/resources/assets are indexed. The
+// external <gamedir>/model3d/ path needs no index: DirectoryModelSource walks a real filesystem.
+def generateModelIndex = tasks.register('generateModelIndex') {
+    description = 'Writes a files.txt index beside each pack-hosted model, so a classloader can list it.'
+    group = 'build'
+    // The generated fixture lands in src/main/resources/data, which is this task's input tree, so
+    // without this edge the index for animated_test can be written before its model exists - an
+    // order-dependent stale index, which is exactly the failure mode this task is meant to avoid.
+    dependsOn 'generateTestModel'
+    def resourceRoots = [
+            layout.projectDirectory.dir('src/main/resources/data'),
+            layout.projectDirectory.dir('src/main/resources/assets'),
+    ]
+    inputs.files(resourceRoots.collect { it.asFile }).withPropertyName('modelResourceRoots')
+    def outputRoot = layout.buildDirectory.dir('generated/modelIndex')
+    outputs.dir(outputRoot)
+    doLast {
+        def written = 0
+        def outRoot = outputRoot.get().asFile
+        outRoot.deleteDir()
+        resourceRoots.each { rootDir ->
+            def root = rootDir.asFile
+            if (!root.isDirectory()) {
+                return
+            }
+            // A model directory is <root>/<namespace>/model3d/<name>. Walk to that depth rather than
+            // guessing, so a nested model path (model3d/a/b) is still one model.
+            root.eachDir { namespaceDir ->
+                def model3dDir = new File(namespaceDir, 'model3d')
+                if (!model3dDir.isDirectory()) {
+                    return
+                }
+                model3dDir.eachDirRecurse { modelDir ->
+                    def entries = []
+                    modelDir.eachFileRecurse { file ->
+                        if (file.isFile() && file.name != 'files.txt') {
+                            entries << modelDir.toPath().relativize(file.toPath())
+                                    .toString().replace('\\', '/')
+                        }
+                    }
+                    if (entries.isEmpty()) {
+                        return
+                    }
+                    entries.sort()
+                    def target = new File(outRoot,
+                            root.name + '/' + namespaceDir.name + '/model3d/'
+                                    + model3dDir.toPath().relativize(modelDir.toPath())
+                                            .toString().replace('\\', '/') + '/files.txt')
+                    target.parentFile.mkdirs()
+                    target.text = '# Generated by the generateModelIndex Gradle task - do not edit.\n' +
+                            '# One path per line, relative to this model directory.\n' +
+                            entries.join('\n') + '\n'
+                    written++
+                }
+            }
+        }
+        logger.lifecycle("generateModelIndex: wrote ${written} model index file(s)")
+    }
+}
+
+sourceSets.main.resources.srcDir generateModelIndex
+tasks.named('processResources') { dependsOn 'generateModelIndex' }
+
+// ---------------------------------------------------------------------------
+// Deploy to the real game
+// ---------------------------------------------------------------------------
+// Copies the built jar into a Minecraft instance's mods/ directory and verifies the copy by hash.
+//
+// This exists because the build output and the game are two different places, and a stale jar there
+// is indistinguishable from a broken fix: a session that runs 17:19 code reports 17:19 failures, and
+// the report reads exactly like the fix not working. That happened here - a crash report was
+// investigated as a new bug when the tested jar predated the fix by half an hour. A copy with a
+// hash check turns "did my change get there" from an assumption into a fact.
+//
+//   gradlew deployMod -Pmodel3dGameDir="E:/.minecraft/versions/1.20.1-Forge_47.4.10"
+//   gradlew deployMod -Pmodel3dGameDir="..." -Pmodel3dDryRun
+//
+// The default path is this machine's instance so the common case needs no property.
+tasks.register('deployMod') {
+    group = 'build'
+    description = 'Copies the built jar into a Minecraft instance mods/ dir and verifies it by hash.'
+    dependsOn 'build'
+    def defaultGameDir = 'E:/.minecraft/versions/1.20.1-Forge_47.4.10'
+    def gameDir = project.hasProperty('model3dGameDir')
+            ? project.property('model3dGameDir').toString() : defaultGameDir
+    def dryRun = project.hasProperty('model3dDryRun')
+    doLast {
+        def jarTask = tasks.named('jar').get()
+        def built = jarTask.archiveFile.get().asFile
+        if (!built.isFile()) {
+            throw new GradleException("No built jar at ${built}; run the build first.")
+        }
+        def modsDir = new File(gameDir, 'mods')
+        if (!modsDir.isDirectory()) {
+            throw new GradleException("No mods/ directory at ${modsDir}. Pass the instance root with"
+                    + " -Pmodel3dGameDir=<path>, e.g. -Pmodel3dGameDir=\"E:/.minecraft/versions/1.20.1-Forge_47.4.10\"")
+        }
+        def target = new File(modsDir, built.name)
+
+        def sha = { File f ->
+            def digest = java.security.MessageDigest.getInstance('SHA-256')
+            f.withInputStream { stream ->
+                byte[] buffer = new byte[65536]
+                int read
+                while ((read = stream.read(buffer)) > 0) {
+                    digest.update(buffer, 0, read)
+                }
+            }
+            return java.util.HexFormat.of().formatHex(digest.digest())
+        }
+
+        def builtHash = sha(built)
+        def previous = target.isFile() ? sha(target) : null
+        logger.lifecycle("deployMod: source ${built.name} (${built.length()} bytes, sha256 ${builtHash.take(16)}...)")
+        if (previous == null) {
+            logger.lifecycle("deployMod: target absent -> first deploy")
+        } else if (previous == builtHash) {
+            logger.lifecycle("deployMod: target already identical (sha256 ${previous.take(16)}...)")
+        } else {
+            logger.lifecycle("deployMod: target was a DIFFERENT build (sha256 ${previous.take(16)}...) -> replacing")
+        }
+
+        if (dryRun) {
+            logger.lifecycle("deployMod: dry run, nothing copied")
+            return
+        }
+        java.nio.file.Files.copy(built.toPath(), target.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        // Verify by re-hashing what landed rather than trusting the copy: this is the whole point of
+        // the task, and a silent partial copy is the failure it is meant to prevent.
+        def deployedHash = sha(target)
+        if (deployedHash != builtHash) {
+            throw new GradleException("Deployed jar hash mismatch: ${deployedHash} != ${builtHash}")
+        }
+        logger.lifecycle("deployMod: copied and verified at ${target}")
+        logger.lifecycle("deployMod: sha256 ${deployedHash}")
+    }
+}
+
+repositories {
+    maven {
+        url "https://cursemaven.com"
+        content {
+            includeGroup "curse.maven"
+        }
+    }
+    exclusiveContent {
+        forRepository { maven { name = "Modrinth"; url = "https://api.modrinth.com/maven" } }
+        forRepositories(fg.repository)
+        filter { includeGroup "maven.modrinth" }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shader verification
+// ---------------------------------------------------------------------------
+// The renderer cannot be exercised without a game, but the part of it most likely to be silently
+// broken can be: the GLSL. This compiles the shader pair the live render path actually loads -
+// assets/model3d/shaders/model_cpu.vsh and .fsh, through the classpath names ModelCpuRenderPath
+// reads them from - in an invisible GLFW window with a real driver, and asserts that every uniform
+// name the Java side fetches by name is actually active in the linked program.
+//
+// Why it earns a task rather than being left as a manual step: a shader that fails to compile, or a
+// uniform a compiler optimised away, produces no error at runtime - the setter receives -1 and
+// silently does nothing, and the symptom is a model that "does not appear". u_color was exactly that
+// failure: the name existed, the location was fetched, and nothing ever uploaded it.
+//
+// Exit codes: 0 pass, 1 fail with the driver log, 2 no GL context available (NOT a pass - the
+// shaders stay unverified, and a task that reported success for that would be worse than absent).
+sourceSets {
+    verify {
+        java.srcDir 'src/verify/java'
+        compileClasspath += sourceSets.main.output.classesDirs + configurations.compileClasspath
+        // resourcesDir too: the shader check must compile the shader files the mod loads, by the
+        // same classpath names ModelCpuRenderPath#read uses, so a resource the build does not
+        // package is caught here rather than by a player.
+        runtimeClasspath += (sourceSets.main.output.classesDirs + files(sourceSets.main.output.resourcesDir) + configurations.compileClasspath)
+    }
+}
+
+def shaderCheck = tasks.register('shaderCheck', JavaExec) {
+    group = 'verification'
+    description = 'Compiles the live model_cpu shader pair and checks every uniform/attribute name.'
+    // processResources because the shaders are read from the built resource tree, not from src/.
+    dependsOn 'compileJava', 'processResources'
+    classpath = sourceSets.verify.runtimeClasspath
+    mainClass = 'com.model3d.loader.verify.ShaderCompileCheck'
+    // Never up to date: a cached success from a previous revision is indistinguishable from a run
+    // that never happened, and this task's whole value is being able to trust its verdict.
+    outputs.upToDateWhen { false }
+}
+
+// Command grammar check. A command whose documented syntax does not parse is invisible to a unit
+// test of its handler, to a compile and to a server boot - `/testmodel loader model3d:x 0 70 0`
+// shipped broken in exactly that way, failing with "Expected whitespace to end one argument"
+// because Brigadier's string() reader stops at the colon. This runs the real node tree against the
+// exact strings the documentation promises.
+tasks.register('commandParseCheck', JavaExec) {
+    group = 'verification'
+    description = 'Parses the documented /testmodel forms through the real Brigadier node tree.'
+    // processResources because the verify classpath carries the built resource tree (see the verify
+    // source set): every harness that runs off it has to declare that dependency.
+    dependsOn 'compileJava', 'processResources'
+    classpath = sourceSets.verify.runtimeClasspath
+    mainClass = 'com.model3d.loader.verify.CommandParseCheck'
+    outputs.upToDateWhen { false }
+}
+
+// Live mesh path check. Exercises the code that actually draws, on a real driver in an invisible
+// window: the live shader pair through ModelCpuRenderPath#ensureCompiled, a vertex written by the
+// real CpuVertexWriter, uploaded with ModelCpuMesh's own attribute pointers, drawn with
+// glDrawArrays - and GlStateGuard's restore, read back from the driver.
+//
+// It replaces a harness that uploaded and drew GlMesh/GlProgram, classes that are no longer on the
+// draw path: it passed, on every revision, while the live path crashed on the mod's own fixture.
+// The harness now lives in the renderer's package because the layout constants, the writer and the
+// program are package-private - a harness that re-declared them would be verifying its own copy.
+tasks.register('meshUploadCheck', JavaExec) {
+    group = 'verification'
+    description = 'Exercises the live CPU mesh path on a real driver, headlessly.'
+    dependsOn 'compileJava', 'processResources'
+    classpath = sourceSets.verify.runtimeClasspath
+    mainClass = 'com.model3d.loader.client.render.MeshUploadCheck'
+    outputs.upToDateWhen { false }
+}
+
+// Model probe: reparses a model file with the mod's own parsers and reports what is actually in it -
+// vertex counts, index validity, coordinate extents and whether each material's texture resolves.
+//
+// Offline, no GL and no game, because every rendering question so far was investigated from symptoms
+// and several conclusions drawn that way turned out to be wrong. This answers the question underneath
+// them all: what does the parser hand the renderer?
+//   gradlew modelProbe --args="models/sukhoi_su-30_flanker_c.glb full"
+tasks.register('modelProbe', JavaExec) {
+    group = 'verification'
+    description = 'Reports the geometry and texture references of a model file, offline.'
+    dependsOn 'compileJava', 'processResources'
+    classpath = sourceSets.verify.runtimeClasspath
+    mainClass = 'com.model3d.loader.verify.ModelProbe'
+    outputs.upToDateWhen { false }
+}
+
+// Event bus consistency check. Forge has two buses and @Mod.EventBusSubscriber selects exactly
+// one, so a class declaring bus = FORGE while subscribing to an IModBusEvent is never called -
+// silently. That shipped: the entity renderer was never registered and the client crashed with
+// "Cannot invoke EntityRenderer.render(...) because entityrenderer is null" the first time it drew
+// the entity. The property is static, so it is checked here with no game involved.
+tasks.register('eventBusCheck', JavaExec) {
+    group = 'verification'
+    description = 'Verifies every @Mod.EventBusSubscriber subscribes to events its declared bus carries.'
+    dependsOn 'compileJava', 'processResources'
+    classpath = sourceSets.verify.runtimeClasspath
+    mainClass = 'com.model3d.loader.verify.EventBusCheck'
+    systemProperty 'model3d.verify.classes',
+            layout.buildDirectory.dir('classes/java/main').get().asFile.absolutePath
+    outputs.upToDateWhen { false }
+}
+
+// One entry point for "check everything that can be checked without launching a game".
+// `build` deliberately does not depend on this: shaderCheck needs a GL driver and
+// commandParseCheck needs a full Minecraft classpath, and a build that fails on a machine without
+// either would be worse than one that leaves them opt-in. Run `checkExtras` before a release.
+tasks.register('checkExtras') {
+    group = 'verification'
+    description = 'Runs the verification tasks that build does not: shader, mesh upload, command, event bus.'
+    dependsOn 'shaderCheck', 'meshUploadCheck', 'commandParseCheck', 'eventBusCheck'
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    // Parser and animation tests run as plain JUnit against real model files. The
+    // loaders deliberately touch no Minecraft class, so they are testable without
+    // booting the game - see src/test/resources/model3d-corpus.properties.
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    // A 43 MB GLB plus its decoded float buffers needs far more than the default
+    // 512m fork heap; without this the corpus tests die as OutOfMemoryError and
+    // look like parser bugs.
+    maxHeapSize = '2g'
+    // Never let a stale report stand in for a run: a report from a previous
+    // revision is indistinguishable from a run that never happened.
+    outputs.upToDateWhen { false }
+    // Real model corpus lives outside the project (licensed third-party assets).
+    // Point at it explicitly when it is somewhere else:
+    //   gradlew test -Dmodel3d.corpus="D:\models"
+    systemProperty 'model3d.corpus', System.getProperty('model3d.corpus', '')
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat = 'full'
+    }
+}
+
+jar.finalizedBy('reobfJar')
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
