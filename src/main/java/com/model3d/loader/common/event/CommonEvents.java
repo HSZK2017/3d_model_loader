@@ -1,13 +1,12 @@
 package com.model3d.loader.common.event;
 
 import com.model3d.loader.Model3D;
-import com.model3d.loader.common.command.TestModelCommand;
-import com.model3d.loader.common.entity.TestModelEntity;
+import com.model3d.loader.api.ModelCarrier;
+import com.model3d.loader.api.ModelSync;
 import com.model3d.loader.resource.ModelLoadService;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.event.AddReloadListenerEvent;
 import net.minecraftforge.event.OnDatapackSyncEvent;
-import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.server.ServerStartedEvent;
@@ -21,19 +20,15 @@ import net.minecraftforge.fml.common.Mod;
  * <p>Everything here is server-authoritative lifecycle wiring: when the model index is built,
  * when it is invalidated, and when a client needs the description of a model it has just started
  * tracking. None of it touches the renderer.
+ *
+ * <p>Deliberately free of any concrete entity: the hooks are stated in terms of {@link ModelCarrier},
+ * so a mod that uses this API gets the resync behaviour without this mod knowing what its entities
+ * are. The command that spawns a carrier for testing lives in a separate test mod.
  */
 @Mod.EventBusSubscriber(modid = Model3D.MOD_ID)
 public final class CommonEvents {
 
     private CommonEvents() {
-    }
-
-    @SubscribeEvent
-    public static void onRegisterCommands(RegisterCommandsEvent event) {
-        TestModelCommand.register(event.getDispatcher());
-        // A second registration of the same root literal for the `diag` subcommand. Brigadier merges
-        // it into the existing node tree, so /testmodel keeps one help entry rather than two.
-        com.model3d.loader.common.command.DiagCommand.register(event.getDispatcher());
     }
 
     /**
@@ -51,9 +46,6 @@ public final class CommonEvents {
         ModelLoadService.INSTANCE.prepareModelFolders();
         ModelLoadService.INSTANCE.invalidateNameIndex();
         ModelLoadService.INSTANCE.knownServerModelNames(event.getServer().getResourceManager());
-        // Opt-in acceptance run: exercises the real resource path and prints a PASS/FAIL verdict.
-        // Runs last, because it asserts on the name index this method just built.
-        SelfTest.maybeRun(event);
     }
 
     /**
@@ -101,14 +93,18 @@ public final class CommonEvents {
      * Sends the tracked entity's model description to a player who has just started seeing it.
      *
      * <p>Without this, a player joining a world where a model-bearing entity already exists
-     * renders the pig fallback until something else re-syncs the entity: the model description
-     * was sent when the entity spawned, which happened before this player was connected.
+     * renders the fallback until something else re-syncs the entity: the model description was sent
+     * when the entity spawned, which happened before this player was connected.
+     *
+     * <p>Stated in terms of the API's own interface rather than any concrete entity, so a mod that
+     * implements {@code ModelCarrier} gets this without writing an event handler - which is the
+     * whole point of the API owning the wire contract.
      */
     @SubscribeEvent
     public static void onStartTracking(PlayerEvent.StartTracking event) {
-        if (event.getTarget() instanceof TestModelEntity testEntity
+        if (event.getTarget() instanceof ModelCarrier carrier
                 && event.getEntity() instanceof ServerPlayer player) {
-            testEntity.sendModelSync(player);
+            ModelSync.send(carrier, player);
         }
     }
 }

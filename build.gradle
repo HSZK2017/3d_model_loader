@@ -32,60 +32,10 @@ minecraft {
         }
         client {
             property 'forge.enabledGameTestNamespaces', mod_id
-            // Opt-in client acceptance run: joins a world, spawns the test entity, holds it for a
-            // few seconds and quits. This is the only check that exercises the render path inside a
-            // real client, which is where a JVM-level fault survived every headless check.
-            //   gradlew runClient -Pmodel3dClientTest=model3d:animated_test
-            //
-            // The world name can be overridden for a one-off run:
-            //   -Pmodel3dClientWorld=someWorld
-            if (project.hasProperty('model3dClientTest')) {
-                jvmArgs "-Dmodel3d.clientTest=${project.property('model3dClientTest')}"
-                // A window big enough for the GUI scale this display resolves to.
-                //
-                // The previous 854x480 default was too small: with guiScale left on "auto", Minecraft
-                // derives the scale from the window size against the monitor's DPI, and on this machine
-                // that produced a GUI whose font was one character per line. The Game Menu then opened on
-                // focus loss and could not be clicked out of, which read as a hung client and cost an
-                // hour of misdirected effort. 1280x720 gives the auto-scaler room to pick a readable 2.
-                args '--width', '1280', '--height', '720'
-                // Optional: a mode folder the client writes into the model folder mid-session, to
-                // prove hot reload picks up a model that did not exist at startup.
-                if (project.hasProperty('model3dClientTestHotWrite')) {
-                    jvmArgs "-Dmodel3d.clientTestHotWrite=${project.property('model3dClientTestHotWrite')}"
-                }
-                // Optional: spawn distance in blocks, to make "I cannot see it" reproducible.
-                if (project.hasProperty('model3dClientTestDistance')) {
-                    jvmArgs "-Dmodel3d.clientTestDistance=${project.property('model3dClientTestDistance')}"
-                }
-                // Optional: the render path's own diagnostic flags. They are system properties read at
-                // class-init time, so they have to be on the JVM command line - and
-                // `gradlew runClient -Dmodel3d.traceDraw=true` does NOT work, because Gradle consumes
-                // -D itself and the game never sees it. Measured: a traced run that printed nothing at
-                // all looked exactly like a render path that was never entered.
-                //   gradlew runClient -Pmodel3dClientTest=... -Pmodel3dTraceDraw=true
-                if (project.hasProperty('model3dTraceDraw')) {
-                    jvmArgs "-Dmodel3d.traceDraw=${project.property('model3dTraceDraw')}"
-                }
-                // Quick play is what makes this unattended: without it the client sits on the title
-                // screen and the render path is never reached, which is a silent no-op that still
-                // exits 0 and would read as a pass.
-                args '--quickPlaySingleplayer',
-                        project.hasProperty('model3dClientWorld')
-                                ? project.property('model3dClientWorld') : 'world'
-            }
         }
         server {
             property 'forge.enabledGameTestNamespaces', mod_id
             args '--nogui'
-            // Opt-in dedicated-server acceptance run. Pass the model to exercise:
-            //   gradlew runServer -Pmodel3dSelfTest=model3d:animated_test
-            // Lower-case -P on purpose: -D after a task name is parsed by Gradle as a task
-            // argument ("Cannot locate tasks that match '.selfTest=...'"), which is a confusing
-            // way to fail for a test hook, so the project property is the documented spelling.
-            if (project.hasProperty('model3dSelfTest')) {
-                jvmArgs "-Dmodel3d.selfTest=${project.property('model3dSelfTest')}"
-            }
         }
         gameTestServer {
             property 'forge.enabledGameTestNamespaces', mod_id
@@ -156,7 +106,13 @@ afterEvaluate {
 tasks.register('linkSampleModels') {
     group = 'verification'
     description = 'Exposes models/ under run/model3d/model3d/ so the sample Su-30 is loadable as model3d:su30.'
+    // Looked up in two places, because the developer's model assets may live either inside this
+    // project or beside it: `models/` here, or `../models/` when the repository root is a container
+    // for several mod projects. Neither is committed - this is an API mod and ships no geometry.
     def sampleSource = layout.projectDirectory.dir('models/sukhoi-su-30-flanker-c')
+    if (!sampleSource.asFile.isDirectory()) {
+        sampleSource = layout.projectDirectory.dir('../models/sukhoi-su-30-flanker-c')
+    }
     def linkParent = layout.projectDirectory.dir('run/model3d/model3d')
     def linkPath = layout.projectDirectory.file('run/model3d/model3d/su30')
     // Only the source directory is an input: the junction target is a fresh path each run, so
@@ -206,16 +162,37 @@ tasks.matching { it.name == 'runClient' || it.name == 'runServer' }.configureEac
     dependsOn 'linkSampleModels'
 }
 
-// Kept as a Gradle-level constant so the generator task and the resource path cannot drift:
-// the string also appears in TestModelGenerator.DEFAULT_OUTPUT, and editing one without the other
-// would put the fixture where processResources does not look.
+// ---------------------------------------------------------------------------
+// The development jar
+// ---------------------------------------------------------------------------
+// The published jar is reobfuscated to SRG names by `reobfJar`, which is right for a game install
+// and useless for a compile: another mod's development build refers to Mojang names. This task
+// produces the development-mapped twin, and the companion test mod depends on it.
 //
-// `data/`, not `assets/`: a dedicated server's resource manager is PackType.SERVER_DATA, so it
-// serves data/ and never assets/ - a fixture under assets/ would be invisible to the very command
-// that exercises it. Measured on a live server: listResources("loot_tables")=1091,
-// listResources("models")=0.
-def TestModelGenerator_DEFAULT_OUTPUT =
-        'src/main/resources/data/model3d/model3d/animated_test/model.glb'
+//   gradlew devJar   ->  build/devlibs/model3d-<mc>-<version>-dev.jar
+//
+// It is deliberately not part of `build`: it is an input for a *different* project, not an artefact
+// this mod ships, and putting it in build/libs would invite someone to publish the wrong one.
+tasks.register('devJar', Jar) {
+    group = 'build'
+    description = 'Development-mapped jar for another mod to compile against (not for a game install).'
+    dependsOn 'classes'
+    archiveClassifier = 'dev'
+    destinationDirectory = layout.buildDirectory.dir('devlibs')
+    from sourceSets.main.output
+    // The metadata is already expanded by processResources, so this jar is loadable as a mod in a
+    // development run - which is what lets the test mod's runClient load both mods.
+    manifest {
+        attributes(
+                'Specification-Title'    : mod_id,
+                'Specification-Vendor'   : mod_authors,
+                'Specification-Version'  : '1',
+                'Implementation-Title'   : mod_name,
+                'Implementation-Version' : mod_version,
+                'Implementation-Vendor'  : mod_authors,
+        )
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Offline model inspection
@@ -226,12 +203,12 @@ def TestModelGenerator_DEFAULT_OUTPUT =
 // mod runs, driven from a main() so a change in the parser is visible as a diff
 // in this output rather than only as something that looks wrong on screen.
 //
-// Classpath note, and it applies to both JavaExec tasks below. These tasks are declared as
-// dependencies of processResources, so their classpath must not carry a builtBy edge back to
-// `classes` (which depends on processResources) - that is a cycle, and it fails EVERY test/build
-// invocation, not just the wiring being added:
+// Classpath note for the JavaExec tasks below. Their classpath must not carry a builtBy edge back
+// to `classes`, because `classes` depends on processResources and a task wired into
+// processResources would then depend on itself - a cycle that fails EVERY test/build invocation,
+// not just the wiring being added:
 //
-//     classes -> processResources -> generateTestModel -> classes
+//     classes -> processResources -> <a JavaExec on runtimeClasspath> -> classes
 //
 // Two traps here, both hit while writing this:
 //   * `sourceSets.main.runtimeClasspath` expands to `classes` + runtime deps. Cycle.
@@ -258,33 +235,32 @@ tasks.register('modelInspect', JavaExec) {
 }
 
 // ---------------------------------------------------------------------------
-// Synthetic animated fixture
+// Synthetic animated fixture: no longer generated into src/
 // ---------------------------------------------------------------------------
-// The third-party corpus in this repository holds no animation and no skin data (all five
-// glTF/GLB files have zero `animations` and `skins` keys), so the two features this mod exists
-// for have no real asset to exercise them. This task generates the missing fixture from
-// reviewable source instead of committing an unreproducible binary blob: the expected geometry
-// is stated in TestModelGenerator's javadoc, the test that consumes it asserts those values, and
-// the fixture can be regenerated or reshaped at will.
-tasks.register('generateTestModel', JavaExec) {
-    group = 'build'
-    description = 'Regenerates the synthetic skinned+animated GLB used as the animation test fixture.'
+// Runs the fixture generator by hand. It writes into build/, never into src/: the fixture used to be
+// regenerated into src/main/resources on every build, which made the tree permanently dirty and
+// shipped a test binary in the API jar. The companion test mod runs the same class through its own
+// task to produce the fixture its acceptance run spawns.
+tasks.register('runTestModelGenerator', JavaExec) {
+    group = 'verification'
+    description = 'Generates the synthetic skinned+animated GLB fixture into build/test-fixture.'
     dependsOn 'compileJava'
     classpath = toolClasspath
     mainClass = 'com.model3d.loader.tools.TestModelGenerator'
     args = project.hasProperty('model3dTestModelOutput')
             ? [project.property('model3dTestModelOutput')]
-            : [TestModelGenerator_DEFAULT_OUTPUT]
-    // The generated file lands in src/main/resources, so processResources must not read the tree
-    // until it is complete. The dependency direction is one-way on purpose: processResources
-    // depends on this task, never the reverse.
-    outputs.file(layout.projectDirectory.file(TestModelGenerator_DEFAULT_OUTPUT))
+            : ['build/test-fixture/animated_test.glb']
 }
 
-// The generated fixture is a *source* input of processResources, not a build artefact of it, so
-// it must exist before the resource copy runs rather than the other way round. See the classpath
-// note above for why this edge is acyclic.
-tasks.named('processResources') { dependsOn 'generateTestModel' }
+// ---------------------------------------------------------------------------
+// Synthetic animated fixture: no longer generated here
+// ---------------------------------------------------------------------------
+// This task used to write a synthetic skinned+animated GLB into src/main/resources, so the API jar
+// shipped a test fixture and every build rewrote a binary in the source tree - unreproducible
+// byte-for-byte, which is why the repository was permanently dirty. The fixture exists to exercise
+// the API from outside it, so the *test* mod generates it now, into a build directory of its own,
+// and the API's unit tests build it in-process from TestModelGenerator (which stays here, as the
+// dev tool that describes the file).
 
 // ---------------------------------------------------------------------------
 // Classpath file index for pack-hosted models
@@ -303,10 +279,6 @@ tasks.named('processResources') { dependsOn 'generateTestModel' }
 def generateModelIndex = tasks.register('generateModelIndex') {
     description = 'Writes a files.txt index beside each pack-hosted model, so a classloader can list it.'
     group = 'build'
-    // The generated fixture lands in src/main/resources/data, which is this task's input tree, so
-    // without this edge the index for animated_test can be written before its model exists - an
-    // order-dependent stale index, which is exactly the failure mode this task is meant to avoid.
-    dependsOn 'generateTestModel'
     def resourceRoots = [
             layout.projectDirectory.dir('src/main/resources/data'),
             layout.projectDirectory.dir('src/main/resources/assets'),
@@ -490,21 +462,10 @@ def shaderCheck = tasks.register('shaderCheck', JavaExec) {
     outputs.upToDateWhen { false }
 }
 
-// Command grammar check. A command whose documented syntax does not parse is invisible to a unit
-// test of its handler, to a compile and to a server boot - `/testmodel loader model3d:x 0 70 0`
-// shipped broken in exactly that way, failing with "Expected whitespace to end one argument"
-// because Brigadier's string() reader stops at the colon. This runs the real node tree against the
-// exact strings the documentation promises.
-tasks.register('commandParseCheck', JavaExec) {
-    group = 'verification'
-    description = 'Parses the documented /testmodel forms through the real Brigadier node tree.'
-    // processResources because the verify classpath carries the built resource tree (see the verify
-    // source set): every harness that runs off it has to declare that dependency.
-    dependsOn 'compileJava', 'processResources'
-    classpath = sourceSets.verify.runtimeClasspath
-    mainClass = 'com.model3d.loader.verify.CommandParseCheck'
-    outputs.upToDateWhen { false }
-}
+// Command grammar check: moved to the test mod, which now owns the /testmodel command tree. The
+// harness and the command it drives have to live in the same project, or the check compiles against
+// a command this jar does not have. What it proves is still proved - just from the project that
+// ships the command, as `gradlew commandParseCheck` there.
 
 // Live mesh path check. Exercises the code that actually draws, on a real driver in an invisible
 // window: the live shader pair through ModelCpuRenderPath#ensureCompiled, a vertex written by the
@@ -562,8 +523,8 @@ tasks.register('eventBusCheck', JavaExec) {
 // either would be worse than one that leaves them opt-in. Run `checkExtras` before a release.
 tasks.register('checkExtras') {
     group = 'verification'
-    description = 'Runs the verification tasks that build does not: shader, mesh upload, command, event bus.'
-    dependsOn 'shaderCheck', 'meshUploadCheck', 'commandParseCheck', 'eventBusCheck'
+    description = 'Runs the verification tasks that build does not: shader, mesh upload, event bus.'
+    dependsOn 'shaderCheck', 'meshUploadCheck', 'eventBusCheck'
 }
 
 dependencies {

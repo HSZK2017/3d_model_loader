@@ -1,13 +1,10 @@
 package com.model3d.loader.client;
 
 import com.model3d.loader.Model3D;
-import com.model3d.loader.client.render.RenderTestModelEntity;
-import com.model3d.loader.common.registry.ModEntities;
 import net.minecraft.server.packs.resources.PreparableReloadListener;
 import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraftforge.api.distmarker.Dist;
-import net.minecraftforge.client.event.EntityRenderersEvent;
 import net.minecraftforge.client.event.RegisterClientReloadListenersEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -58,27 +55,14 @@ public final class ClientSetup {
     }
 
     /**
-     * Registers the test entity's renderer.
-     *
-     * <p>The provider lambda cannot be evaluated earlier than this event: it bakes the pig model
-     * layer, and {@code EntityRendererProvider.Context#bakeLayer} needs the model set that only
-     * exists once the client has started.
-     *
-     * <p>Logged at INFO because "was the renderer registered" is the question that took a crash
-     * report to answer: without this line there is no way to tell a missing registration from a
-     * renderer that threw.
-     */
-    @SubscribeEvent
-    public static void onRegisterRenderers(EntityRenderersEvent.RegisterRenderers event) {
-        event.registerEntityRenderer(ModEntities.TEST_MODEL.get(), RenderTestModelEntity::new);
-        Model3D.LOGGER.info("Model3D: registered the entity renderer for {} (test model when one is "
-                + "attached, vanilla pig model otherwise)", ModEntities.TEST_MODEL.getId());
-    }
-
-    /**
      * Client startup. Nothing to build here - the shader program is compiled on first draw, when a
      * GL context is guaranteed - so this reports that the client side is live, which is the first
      * line to look for when a model does not render.
+     *
+     * <p>No entity renderer is registered here: the API has no entity. A mod that owns a carrier
+     * registers its own renderer for its own entity type and calls
+     * {@code ClientModelManager.get().vanillaRenderer()} from it - the companion test mod's
+     * {@code RenderTestModelEntity} is the worked example.
      */
     @SubscribeEvent
     public static void onClientSetup(FMLClientSetupEvent event) {

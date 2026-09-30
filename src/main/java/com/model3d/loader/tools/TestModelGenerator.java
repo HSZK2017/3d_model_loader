@@ -27,9 +27,13 @@ import java.util.Map;
  * <p>Generating it means the fixture is reviewable source, its expected geometry is stated in the
  * test that consumes it, and it can be regenerated after any change:
  * <pre>
- *   gradlew generateTestModel          # writes into src/main/resources
- *   gradlew generateTestModel --args="build/other.glb"
+ *   gradlew runTestModelGenerator                   # writes into build/test-fixture/
+ *   gradlew runTestModelGenerator --args="build/other.glb"
  * </pre>
+ *
+ * <p>It writes into a build directory, never into {@code src/}: a generated binary in the source
+ * tree is unreproducible byte-for-byte and leaves the working copy permanently dirty. The companion
+ * test mod runs this class to produce the fixture its acceptance run spawns.
  *
  * <h2>What it builds</h2>
  * <pre>
@@ -63,7 +67,7 @@ public final class TestModelGenerator {
      * {@code ModelLocation}'s class comment for the measurement.
      */
     public static final String DEFAULT_OUTPUT =
-            "src/main/resources/data/model3d/model3d/animated_test/model.glb";
+            "build/test-fixture/animated_test.glb";
 
     /** Y coordinate of the plane separating the two bones' vertices. */
     private static final float JOINT_PLANE_Y = 0.5f;

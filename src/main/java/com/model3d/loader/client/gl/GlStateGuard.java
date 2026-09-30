@@ -227,15 +227,4 @@ public final class GlStateGuard implements AutoCloseable {
         return previousProgram;
     }
 
-    public int previousVertexArray() {
-        return previousVertexArray;
-    }
-
-    public int previousActiveTexture() {
-        return previousActiveTexture;
-    }
-
-    public boolean depthWriteEnabled() {
-        return depthWriteEnabled;
-    }
 }

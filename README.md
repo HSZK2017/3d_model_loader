@@ -3,9 +3,25 @@
 A Minecraft **1.20.1 Forge** mod that loads common interchange 3D model formats at runtime,
 plays the animation data those files carry, and draws the result on ordinary entities.
 
-It is an **API mod**. The deliverable is not "an aircraft in Minecraft" 鈥?it is a documented,
-testable surface that another mod can call to attach a `.glb` or `.obj` to its own entity, plus
-one test entity that proves the surface works end to end.
+It is an **API mod**. The deliverable is not "an aircraft in Minecraft" - it is a documented,
+testable surface that another mod can call to attach a `.glb` or `.obj` to its own entity.
+
+> ### Where the test program went
+> This repository ships the **loader only**: no entity, no command, no model files and no test
+> fixture. The test entity, `/testmodel` and the unattended acceptance runs live in the companion
+> project in `../model3d_testmod`, which consumes this API from outside it - its own Gradle build,
+> its own mod id, its own jar, and no access to anything here that is not public.
+>
+> That is deliberate, and it is the API's own integration test: if the test mod compiles and its
+> acceptance run passes, the public surface is enough to load, animate and draw a model. The
+> sections below that describe `/testmodel` still describe real behaviour, now installed by that
+> companion mod - and `ModelCarrier` (in `com.model3d.loader.api`) is the interface it implements.
+>
+> One implementation, two calls: implement `ModelCarrier` on your entity, and render it with
+> `ClientModelManager.get().instanceFor(entity)` and
+> `ClientModelManager.get().vanillaRenderer().draw(...)`. Everything else - parsing, the scene and
+> animation model, resource resolution, the model cache, the CPU-skinning GL path, the shader pair,
+> the network sync - is this mod's.
 
 ---
 

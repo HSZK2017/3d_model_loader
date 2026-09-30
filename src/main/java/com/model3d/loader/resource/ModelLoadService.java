@@ -47,9 +47,6 @@ public final class ModelLoadService {
 
     public static final ModelLoadService INSTANCE = new ModelLoadService();
 
-    /** Directory under the game directory that overrides pack-shipped models. */
-    public static final String EXTERNAL_ROOT = "model3d";
-
     /** Candidate model file names to auto-detect, in preference order (see ModelDescriptor). */
     private static final String[] AUTO_DETECT_ORDER = { "model.glb", "model.gltf", "model.obj" };
 

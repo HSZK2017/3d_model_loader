@@ -41,14 +41,4 @@ public final class Ids {
         return ResourceLocation.tryParse(id);
     }
 
-    /**
-     * Lowers an id to the form Minecraft's resource lookups require.
-     *
-     * <p>Resource pack paths are lower-case only, so an id derived from a file name or a command
-     * argument must be lower-cased before it is used as a lookup key - otherwise the lookup misses
-     * for a reason that appears nowhere in the error message.
-     */
-    public static String lookupPath(ResourceLocation id) {
-        return id.getPath().toLowerCase(java.util.Locale.ROOT);
-    }
 }

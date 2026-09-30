@@ -6,7 +6,7 @@ import com.model3d.loader.api.ModelInstance;
 import com.model3d.loader.api.ModelScale;
 import com.model3d.loader.client.render.ClientTextureResolver;
 import com.model3d.loader.client.render.VanillaModelRenderer;
-import com.model3d.loader.common.entity.TestModelEntity;
+import com.model3d.loader.api.ModelCarrier;
 import com.model3d.loader.resource.ModelLoadService;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Minecraft;
@@ -108,10 +108,6 @@ public final class ClientModelManager {
     private ClientModelManager() {
     }
 
-    public ClientTextureResolver textureResolver() {
-        return textureResolver;
-    }
-
     // ------------------------------------------------------------------
     // Lookup
     // ------------------------------------------------------------------
@@ -163,10 +159,13 @@ public final class ClientModelManager {
      */
     @Nullable
     public ModelInstance instanceFor(net.minecraft.world.entity.Entity entity) {
-        if (!(entity instanceof TestModelEntity testEntity) || !testEntity.hasModel()) {
+        // ModelCarrier, not a concrete entity: this used to name the mod's own test entity, which
+        // meant the render path could only ever draw that one type and the API was unusable by any
+        // other mod. The interface is now the only thing the loader knows about a carrier.
+        if (!(entity instanceof ModelCarrier carrier) || !carrier.hasModel()) {
             return null;
         }
-        ResourceLocation modelId = testEntity.modelId();
+        ResourceLocation modelId = carrier.modelId();
         if (modelId == null) {
             return null;
         }
@@ -186,7 +185,7 @@ public final class ClientModelManager {
         ModelInstance instance = new ModelInstance(handle.scene(), handle.name());
         Entry entry = new Entry(modelId, handle, instance);
         try {
-            configure(instance, handle, testEntity, entry);
+            configure(instance, handle, carrier, entry);
         } catch (RuntimeException e) {
             // instanceFor is called from the entity renderer, so a malformed animation state or a
             // broken scene must not escape into the render loop. Dropping the handle makes the
@@ -210,7 +209,7 @@ public final class ClientModelManager {
      * clock, so a model would freeze on its first keyframe while looking like it was playing
      * (the state says "playing") - a failure that is very hard to read off the code.
      */
-    private void configure(ModelInstance instance, ModelHandle handle, TestModelEntity entity,
+    private void configure(ModelInstance instance, ModelHandle handle, ModelCarrier entity,
                            Entry entry) {
         if (handle == null) {
             return;
@@ -243,7 +242,7 @@ public final class ClientModelManager {
         }
 
         // The entity carries the scale resolved on the server from the descriptor, so it is
-        // authoritative. Zero means "never set" (see TestModelEntity.UNSET_SCALE), and only that is
+        // authoritative. Zero or negative means "never set" (ModelCarrier#modelScale), and only that is
         // replaced by ModelScale: a legitimate 1.0 - a model authored in blocks, or a descriptor whose
         // targetBlocks works out to one block per unit - used to be indistinguishable from "unset" and
         // was silently replaced by the normalisation.
@@ -305,12 +304,12 @@ public final class ClientModelManager {
             if (entry.broken) {
                 continue;
             }
-            if (entity instanceof TestModelEntity testEntity && testEntity.hasModel()) {
+            if (entity instanceof ModelCarrier carrier && carrier.hasModel()) {
                 // peek, not acquire: this entry already holds the manager's reference, and taking a
                 // second one every frame would pin the model forever.
-                ModelHandle handle = ModelLoadService.INSTANCE.peekClient(testEntity.modelId());
+                ModelHandle handle = ModelLoadService.INSTANCE.peekClient(carrier.modelId());
                 if (handle != null) {
-                    configure(entry.instance, handle, testEntity, entry);
+                    configure(entry.instance, handle, carrier, entry);
                 }
             }
             try {
@@ -331,11 +330,6 @@ public final class ClientModelManager {
                         + "back to the pig marker", mapped.getKey(), entry.modelId, e);
             }
         }
-    }
-
-    /** The partial-tick fraction this frame, for callers that need it. */
-    public float lastPartialTick() {
-        return lastPartialTick;
     }
 
     public void setLastPartialTick(float partialTick) {

@@ -2,13 +2,10 @@ package com.model3d.loader;
 
 import com.mojang.logging.LogUtils;
 import com.model3d.loader.common.network.NetworkHandler;
-import com.model3d.loader.common.registry.ModEntities;
 import com.model3d.loader.format.ModelFormatRegistry;
 import com.model3d.loader.util.Ids;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 import org.slf4j.Logger;
 
 import java.util.List;
@@ -37,8 +34,8 @@ import java.util.List;
  *       server's resource manager is built with {@code PackType.SERVER_DATA}, so it serves
  *       {@code data/} and never {@code assets/} - measured, and the reason this order is what it is
  *       (see {@code ModelLocation}). That is what lets a server resolve and parse a model, which is
- *       how {@code /testmodel loader} reports a bad model name at command time instead of leaving
- *       the client to fail silently.</li>
+ *       which is how a companion mod's command can report a bad model name at command time instead
+ *       of leaving the client to fail silently.</li>
  *   <li><b>{@code client}</b> is the only package that touches OpenGL, and it is only ever
  *       reached from the client's render thread.</li>
  * </ul>
@@ -55,12 +52,10 @@ public class Model3D {
      * suppression keeps the single unavoidable use of it visible and local instead of scattering
      * {@code @SuppressWarnings} across the codebase.
      */
-    @SuppressWarnings("removal")
     public Model3D() {
-        IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
-
-        ModEntities.register(modEventBus);
-        modEventBus.register(ModEntities.AttributeEvents.class);
+        // No registries and no event subscriptions of its own: the network channel is a static field,
+        // and a carrier entity belongs to the mod that owns it (see ModelCarrier). The companion test
+        // mod is the reference implementation, and it is also what keeps this jar free of test code.
         NetworkHandler.register();
 
         List<String> extensions = ModelFormatRegistry.supportedExtensions();
