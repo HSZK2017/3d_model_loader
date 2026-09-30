@@ -238,6 +238,70 @@ public final class ModelLoadService {
         return built;
     }
 
+    // ------------------------------------------------------------------
+    // Accessors for mods that build on this one
+    // ------------------------------------------------------------------
+    // Everything below answers a question a consumer asks and used to have to answer by inference
+    // through an internal type: where the user drops models, what path a model lives at inside a
+    // pack, which roots and extensions the loader recognises. A diagnostic that restates those
+    // rules describes a layout the loader may no longer use - and it is wrong exactly when it is
+    // needed, which is when a model does not load.
+
+    /**
+     * The folder the user drops models into ({@code config/3dmodels}), or null before Forge has
+     * resolved the game directories.
+     *
+     * <p>Null is not "no models": it means "this early in startup there is no such folder yet".
+     * Callers that need a folder rather than a path should wait for the server-start or client-start
+     * hook, by which point it exists and has been created.
+     */
+    public static Path configModelFolder() {
+        return ExternalModelPaths.configModels();
+    }
+
+    /** The same folder as {@link #configModelFolder()}, empty before bootstrap rather than null. */
+    public static List<Path> modelFolders() {
+        Path folder = configModelFolder();
+        return folder == null ? List.of() : List.of(folder);
+    }
+
+    /**
+     * Where {@code modelId} lives inside a pack: {@code <namespace>/model3d/<name>}.
+     *
+     * <p>This is the path a resource pack or a mod's own {@code data/} tree puts a model at, and the
+     * one to print when a model does not load. Both {@code data/} and {@code assets/} roots are
+     * derived from it - see {@link ModelLocation}.
+     */
+    public static String resourcePathOf(ResourceLocation modelId) {
+        return ModelLocation.of(modelId).resourcePath();
+    }
+
+    /**
+     * The directory names a model may live under, in lookup order: {@code model3d}, then
+     * {@code model}.
+     *
+     * <p>Two roots because both are natural guesses for a mod author, and the loader accepts either
+     * rather than making the difference between "works" and "silently not found" depend on one.
+     */
+    public static List<String> modelRoots() {
+        return List.of(ModelLocation.roots());
+    }
+
+    /** The file extensions the loader can parse, in parser precedence order. */
+    public static List<String> supportedExtensions() {
+        return ModelFormatRegistry.supportedExtensions();
+    }
+
+    /**
+     * The candidate file names a model folder may contain, in auto-detection order.
+     *
+     * <p>Exposed for the same reason as the roots: a diagnostic, or a tool that prepares a model
+     * folder, needs to know what the loader will pick before a descriptor names a file.
+     */
+    public static List<String> autoDetectedFileNames() {
+        return List.of(AUTO_DETECT_ORDER);
+    }
+
     /** Creates the model folder and its README. Called once at startup. */
     public void prepareModelFolders() {
         List<ModelLibrary> libraries = libraries();

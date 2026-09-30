@@ -282,60 +282,112 @@ coordinates, where `-1..1` is the viewport. The same Su-30 five blocks from the 
 ---
 ## Using the API from another mod
 
-The public surface is `com.model3d.loader.api` plus `resource.ModelLoadService`.
+The public surface is:
 
-### Attach a model to your own entity
+| Package / type | What it is for |
+|---|---|
+| `com.model3d.loader.api` | `ModelCarrier`, `ModelSync`, `ModelHandle`, `ModelSummary`, `ModelInstance`, `ModelScale`, `ModelBounds` |
+| `com.model3d.loader.resource.ModelLoadService` | loading, releasing, and the folder/layout accessors |
+| `com.model3d.loader.client.ClientModelManager`, `client.render.VanillaModelRenderer` | the client entry points: the instance per entity, and the draw |
+| `com.model3d.loader.tools` | offline tools: model inspection and the synthetic-fixture generator |
+| `com.model3d.loader.Model3D` | the mod id and its logger |
+
+Everything else - `format`, `scene`, `math`, `json`, `animation`, `client.gl`, and `resource` apart
+from `ModelLoadService` - is **internal shape**: its classes are reachable but their types are not
+part of the contract, and they change between releases. `ModelHandle#scene()` is the one such type
+still exposed, marked as internal at its declaration; `ModelHandle#summary()` is the supported way to
+read a model.
+
+### 1. Implement `ModelCarrier` on your entity
 
 ```java
-// Server side, once, when the entity is created:
+public class MyModelEntity extends PathfinderMob implements ModelCarrier {
+    @Override public boolean hasModel()          { return modelId() != null; }
+    @Override public ResourceLocation modelId()  { /* your synced data */ }
+    @Override public String animationName()      { return null; }   // null = descriptor default
+    @Override public boolean isAnimationLooping(){ return true; }
+    @Override public float modelScale()          { return /* synced, 0 = not set */ 0.0f; }
+    @Override public String[] animationNames()   { return /* synced list */; }
+    @Override public void applyModelDescription(ResourceLocation id, float scale, String animation,
+                                                boolean loop, List<String> animations) {
+        /* store what the server sent; this is the client-side handler of the sync packet */
+    }
+}
+```
+
+That is the whole contract, and implementing it is what makes the rest automatic: the client creates
+an instance on first draw, advances the animation, applies the scale and pivot, swaps the instance
+when the model changes, releases it when the entity is removed, and re-describes the entity to a
+player who starts tracking it.
+
+### 2. Attach a model, on the server
+
+```java
 ModelHandle handle = ModelLoadService.INSTANCE.acquireServer(
         server.getResourceManager(), new ResourceLocation("yourpack:your_model"));
 if (handle != null) {
-    float scale = ModelScale.forHandle(handle);          // blocks per model unit
-    List<String> animations = handle.scene().animations().stream()
-            .map(ModelAnimation::name).toList();
-    handle.release();                                     // server holds only the description
+    float scale = ModelScale.forHandle(handle);              // blocks per model unit
+    List<String> animations = handle.animationNames();       // names, in file order
+    ModelSummary summary = handle.summary();                 // counts + size, no internal types
+    float radius = ModelScale.boundingRadiusBlocks(handle);  // for your culling box
+    myEntity.setModel(handle.name(), scale, animations);
+    handle.release();                                        // the server holds only the description
 }
 ```
 
-`acquireServer` returns `null` on absence or parse failure and logs the reason. There is no
-exception path by design: "this entity's model is broken" must not take down the frame that
-draws it.
+`acquireServer` returns `null` on absence or parse failure and logs the reason. There is no exception
+path by design: "this entity's model is broken" must not take down the frame that draws it.
 
-### Load, animate and render (client)
+`ModelHandle` is reference-counted and shared: two hundred entities flying the same aircraft hold one
+copy of the mesh. `acquire` adds a reference and `release` drops one; the last release is what lets
+the model be evicted.
+
+### 3. Render it, on the client
+
+Register one renderer for your entity type (mod bus, `Dist.CLIENT`), then draw through the API:
 
 ```java
-ModelHandle handle = ModelLoadService.INSTANCE.acquireClient(
-        Minecraft.getInstance().getResourceManager(), modelId);
-if (handle != null) {
-    ModelInstance instance = new ModelInstance(handle.scene(), "my_model");
-    instance.setScale(scale);
-    instance.setYawOffset((float) Math.PI);
-    instance.play("spin", true);           // by name, from the file
-    instance.update(deltaSeconds);          // advance clock + resample pose
-    // renderer reads instance.jointMatrices() and handle.scene().meshes()
+ModelInstance instance = ClientModelManager.get().instanceFor(entity);
+if (instance == null) {                 // no model, or it failed to load: your fallback
+    super.render(entity, entityYaw, partialTick, poseStack, buffer, packedLight);
+    return;
+}
+poseStack.pushPose();
+try {
+    // The placement convention a Minecraft entity renderer expects. The model's own scale, pivot and
+    // yaw offset are already in the instance, so they must not be applied here as well.
+    poseStack.mulPose(Axis.YP.rotationDegrees(180.0F - entityYaw));
+    poseStack.scale(-1.0F, -1.0F, 1.0F);
+    ClientModelManager.get().vanillaRenderer().draw(instance, poseStack, entity.modelId(),
+            buffer, packedLight, OverlayTexture.NO_OVERLAY);
+} finally {
+    poseStack.popPose();               // in a finally-block: an unbalanced stack corrupts the frame
 }
 ```
 
-`ModelHandle` is reference-counted and shared: two hundred entities flying the same aircraft hold
-one copy of the mesh. `acquire` adds a reference and `release` drops one; the last release is what
-evicts the model from the cache. (The live path's GPU resources are freed in bulk on a resource
-reload and on level unload, not per handle.)
+Two calls, and you never touch the scene, the vertex layout, the shader or the GL state - the render
+path owns all of it, including saving and restoring what it changes.
 
-### Driving a model from an entity
+### 4. Sync
 
-`com.model3d.loader.common.entity.TestModelEntity` is the worked example: a synced model id, a
-synced animation name, a synced animation-name list (so the client can validate a name without
-re-parsing the file), and a scale. Copy it. The important parts are not the code, they are the
-three decisions:
+`ModelSync.send(carrier, player)` describes a carrier's model to one player. The API already does it
+when a player starts tracking a `ModelCarrier`, so call it yourself only when the model changes after
+the entity was first sent. The other side is `applyModelDescription` on your carrier.
 
-- **The model name is server-authoritative** and synced in a packet rather than in
-  `SynchedEntityData`, because the client needs the whole animation inventory, not just a name.
-- **The animation list is synced as one separator-joined string.** `EntityDataSerializers` has no
-  list-of-strings serializer, and "empty list" and "packet has not arrived yet" must stay
-  distinguishable.
-- **`getAddEntityPacket` + a `StartTracking` hook**, so a player who joins later still receives the
-  description; otherwise they render the fallback marker forever.
+### 5. Sizing
+
+`ModelScale.forHandle(handle)` is blocks per model unit: automatic normalisation (longest axis to
+`DEFAULT_TARGET_BLOCKS`, 40) times the descriptor's multiplier. `longestAxisBlocks(handle)` and
+`boundingRadiusBlocks(handle)` are that scale already applied, which is what a culling box or a
+spawn-distance check wants. `handle.summary()` returns a `ModelSummary`: nodes, meshes, primitives,
+triangles, materials, skins, images, `longestExtent`, whether it is skinned, and each animation's
+name, track count and duration.
+
+### Worked example
+
+The companion test mod in `../model3d_testmod` is the reference implementation. Its entity implements
+`ModelCarrier`, its renderer is the block above, and its unattended acceptance run is what proves
+that this surface is enough to load, animate and draw a model from outside this mod.
 
 ---
 

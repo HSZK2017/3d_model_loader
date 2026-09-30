@@ -80,4 +80,29 @@ public final class ModelScale {
         }
         return scene.scaleForTargetSize(DEFAULT_TARGET_BLOCKS);
     }
+
+    /**
+     * How long the model's longest axis is <b>in blocks</b> once placed.
+     *
+     * <p>This is the number a caller actually wants when sizing anything around a model - a culling
+     * box, a spawn distance, a "is it even visible" check - and it is deliberately here rather than
+     * left as "multiply the scale by the extent yourself": the two factors come from different places
+     * (the descriptor and the file), and getting their product wrong is how a model ends up culled
+     * while it fills the screen.
+     *
+     * @return the longest axis in blocks, or 0 when the model has no geometry
+     */
+    public static float longestAxisBlocks(ModelHandle handle) {
+        return forHandle(handle) * handle.longestExtent();
+    }
+
+    /**
+     * The radius in blocks that contains the model: half its longest axis.
+     *
+     * <p>For a culling box or a proximity check, this is the useful form - a model is centred on its
+     * origin, so it reaches this far in every direction at worst.
+     */
+    public static float boundingRadiusBlocks(ModelHandle handle) {
+        return longestAxisBlocks(handle) * 0.5f;
+    }
 }

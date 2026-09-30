@@ -3,6 +3,7 @@ package com.model3d.loader.api;
 import com.model3d.loader.Model3D;
 import com.model3d.loader.scene.ModelScene;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -41,6 +42,9 @@ public final class ModelHandle {
      */
     private final com.model3d.loader.resource.ModelDescriptor descriptor;
 
+    /** Computed on first request; the scene never changes, so neither does this. */
+    private volatile ModelSummary summary;
+
     public ModelHandle(String name, ModelScene scene, String sourceDescription) {
         this(name, scene, sourceDescription, com.model3d.loader.resource.ModelDescriptor.defaults());
     }
@@ -64,6 +68,40 @@ public final class ModelHandle {
         return name;
     }
 
+    /**
+     * The model's own inventory - nodes, meshes, triangles, materials, animations and size.
+     *
+     * <p>This is the supported way to inspect a loaded model; it is computed once, on first request,
+     * and the scene is immutable, so the same value is returned afterwards. See {@link ModelSummary}
+     * for why the API publishes this instead of the scene.
+     */
+    public ModelSummary summary() {
+        ModelSummary cached = summary;
+        if (cached == null) {
+            cached = ModelSummary.of(scene);
+            summary = cached;
+        }
+        return cached;
+    }
+
+    /** The animation names this model provides, in file order. */
+    public List<String> animationNames() {
+        return summary().animationNames();
+    }
+
+    /** The model's longest bounding-box axis in the file's own units; 0 when it has no geometry. */
+    public float longestExtent() {
+        return summary().longestExtent();
+    }
+
+    /**
+     * The parsed scene - <b>internal shape, not part of the API contract</b>.
+     *
+     * <p>Its type lives in a package this mod does not publish, so a caller cannot name it: no
+     * import, no field, no parameter. It is here because the render path needs it. Use
+     * {@link #summary()} for anything a caller wants to read or keep; a consumer that reaches
+     * through this method is coupled to internals that may change between releases.
+     */
     public ModelScene scene() {
         return scene;
     }
@@ -110,6 +148,6 @@ public final class ModelHandle {
 
     @Override
     public String toString() {
-        return "ModelHandle('" + name + "' refs=" + references.get() + " " + scene + ")";
+        return "ModelHandle('" + name + "' refs=" + references.get() + " " + summary() + ")";
     }
 }
