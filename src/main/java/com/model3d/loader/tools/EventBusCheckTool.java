@@ -288,13 +288,19 @@ public final class EventBusCheckTool {
      *           'Z'/'B'/'C'/'S'/'I'/'J'/'F'/'D' -> u2 const   (5)
      * </pre>
      *
-     * @return "MOD", "FORGE", or null when the annotation carries no explicit bus (Forge's default
-     *         is {@code Bus.FORGE} then, which the caller must apply)
+     * @return "MOD", "FORGE", or null when the class is not a {@code @Mod.EventBusSubscriber} at all.
+     *         A subscriber annotation with no {@code bus} element returns "FORGE": that is Forge's
+     *         default, and skipping those classes instead - which this did at first - leaves the most
+     *         dangerous case unchecked, because writing {@code @Mod.EventBusSubscriber(modid = ...)}
+     *         and subscribing to an {@code IModBusEvent} is exactly the mistake that compiles, boots
+     *         and never fires. Measured on the companion mod: 3 subscriber classes exist and only 2
+     *         were reported.
      */
     private static String busFromAnnotations(byte[] body, String[] utf8) {
         int annotations = u2(body, 0);
         int offset = 2;
         for (int a = 0; a < annotations && offset + 4 <= body.length; a++) {
+            boolean isSubscriberAnnotation = isSubscriberAnnotation(utf8, body, offset);
             offset += 2; // annotation type index
             int pairs = u2(body, offset);
             offset += 2;
@@ -316,8 +322,24 @@ public final class EventBusCheckTool {
                 }
                 offset = next;
             }
+            if (isSubscriberAnnotation) {
+                // Annotated, but the default bus was taken. Forge's default is FORGE.
+                return "FORGE";
+            }
         }
         return null;
+    }
+
+    /**
+     * Whether the annotation at {@code offset} in the body is {@code @Mod.EventBusSubscriber}.
+     *
+     * <p>The type index is the first u2 of an annotation, and it resolves to a descriptor like
+     * {@code Lnet/minecraftforge/fml/common/Mod$EventBusSubscriber;}. Compared by suffix so the check
+     * does not depend on which class loader or remapping produced the file.
+     */
+    private static boolean isSubscriberAnnotation(String[] utf8, byte[] body, int offset) {
+        String type = utf8At(utf8, body, offset);
+        return type != null && type.endsWith("Mod$EventBusSubscriber;");
     }
 
     /**
