@@ -1,10 +1,20 @@
 # 交接文档 — Model3D Loader（3D 模型加载 API 模组）
 
+> **状态提示（2026-09-30 晚更新）**：本文档记录的是项目背景与开发历程，其中的进度与哈希
+> **可能已过期**。当前事实以这几份为准：
+> - [README.md](README.md) —— 对外说明与命令
+> - [CODE_REVIEW_2026-09-30.md](CODE_REVIEW_2026-09-30.md) —— 审查发现的 B1–B18 / C / K / T / R 系列
+> - [REPAIR_LOG_2026-09-30.md](REPAIR_LOG_2026-09-30.md) —— P0–P5 全部修复结论与证据
+>
+> 当前构建：`build/libs/model3d-1.20.1-1.0.0.jar` sha256 `F779CEB7…`；部署到游戏用
+> `gradlew deployMod`（会重新哈希校验落地的那份）。"画面对不对"这个问题已经有了答案：
+> 三次用户报告（蒙皮透出、图层错乱）都已定位并修复，详见修复日志的 P4/P5。
+> 仓库**不含模型美术资源**：`models/` 是本地目录，已在 `.gitignore` 中。
+
 - **日期**：2026-09-30
 - **项目路径**：`E:\program\JAVA\3d_model_loader`
-- **游戏实例**：`E:\.minecraft\versions\1.20.1-Forge_47.4.10`
-- **当前部署 jar**：`mods\model3d-1.20.1-1.0.0.jar` = sha256 `C62FAAA3…`（与 `build\libs` 一致）
-- **当前状态**：**渲染路径刚完成第三次重写并移植完毕，已部署，但"画面对不对"尚未确认**
+- **游戏实例**：`C:\Users\ASUS\AppData\Roaming\.minecraft\versions\1.20.1-Forge_47.4.10`
+- **当前部署 jar**：见上方状态提示（用 `gradlew deployMod` 部署，避免旧 jar 混淆）
 
 ---
 
