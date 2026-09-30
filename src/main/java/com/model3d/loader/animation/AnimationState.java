@@ -10,8 +10,9 @@ import com.model3d.loader.scene.ModelAnimation;
  * {@code AnimationPlayer} turns that clock into a pose. Everything that decides <i>whether</i>
  * to play something lives in the caller.
  *
- * <p>Time is in seconds and advances only through {@link #advance(float)}, never by reading a
- * clock inside this class - so a paused game, a lag spike and a unit test all behave the same.
+ * <p>Time is in seconds and only ever moves through {@link #advance(float)} (elapsed time) or
+ * {@link #seek(float)} (a hand-set position), never by reading a clock inside this class - so a
+ * paused game, a lag spike and a unit test all behave the same.
  *
  * <p><b>The clock is signed.</b> {@link #setSpeed(float)} accepts a negative rate and the clock
  * then runs towards zero, wrapping at both ends of the clip. See {@link #advance(float)} for the
@@ -32,14 +33,32 @@ public final class AnimationState {
     /** Freeze-frame flag: the pose stops updating but the current pose is kept. */
     private boolean paused;
 
+    /**
+     * Segment traversal: while {@link #segment} is set the clock runs from {@link #segmentFrom} to
+     * {@link #segmentStop} once and stops there, instead of wrapping. See {@link #playSegment}.
+     */
+    private boolean segment;
+    private float segmentFrom;
+    private float segmentStop;
+    /** {@code +1} or {@code -1}: the direction the active segment is traversed in. */
+    private float segmentDirection = 1.0f;
+
     /** True when the animation is currently playing. */
     public boolean isPlaying() {
         return playing;
     }
 
-    /** True when a one-shot animation has run to the end, or been run back to the start. */
+    /**
+     * True when playback has stopped on a terminus and is holding there: the end of a one-shot run
+     * forwards, the start of one run backwards, or the stop of a {@link #playSegment} pass.
+     */
     public boolean isFinished() {
         return finished;
+    }
+
+    /** True while a one-pass segment traversal is active; see {@link #playSegment}. */
+    public boolean hasSegment() {
+        return segment;
     }
 
     public boolean isPaused() {
@@ -131,6 +150,10 @@ public final class AnimationState {
         this.playing = animation != null && !animation.isEmpty();
         this.finished = false;
         this.paused = false;
+        // play() is "start this clip", so a segment left over from a previous playSegment() is not
+        // carried into it: its window describes the clip the caller named then, and running the new
+        // clip to a stop point nobody chose for it would read as the clip being truncated.
+        this.segment = false;
         if (behind && animation != null && animation.duration() > 0.0f) {
             float duration = animation.duration();
             float phase = phaseSeedSeconds % duration;
@@ -149,6 +172,9 @@ public final class AnimationState {
         if (animation == null) {
             this.playing = false;
         }
+        // Same reason as play(): the window belonged to the clip that was named, so it goes with it.
+        // The clock itself is deliberately left alone - that is this method's contract.
+        this.segment = false;
     }
 
     public void stop() {
@@ -156,6 +182,143 @@ public final class AnimationState {
         this.finished = false;
         this.animation = null;
         this.time = 0.0f;
+        this.segment = false;
+    }
+
+    /**
+     * Starts a <b>one-pass</b> traversal of {@code animation} from {@code fromSeconds} to
+     * {@code toSeconds} and stops there, holding the pose.
+     *
+     * <p>This is the "play this part of the clip and stop" primitive: the shape of a state
+     * transition (a lid opening, gear extending) is an interval of a clip, and expressing it as a
+     * bounded pass is one call instead of a caller polling the clock and stopping it by hand.
+     *
+     * <h2>The rules, and why each one is what it is</h2>
+     * <ul>
+     *   <li><b>Endpoints are clamped into {@code [0, duration]}.</b> A segment is a bounded
+     *       traversal, so wrapping an endpoint past the clip's end would make the pass sweep the
+     *       whole clip - not what "from 1.9 s to 2.1 s" can have meant.</li>
+     *   <li><b>{@code toSeconds < fromSeconds} plays the pass backwards</b> and stops at
+     *       {@code toSeconds}. The alternative - swapping the endpoints - would make
+     *       {@code playSegment("lid", 2, 0, 1)} open rather than close, and it is the ordering, not
+     *       the rate, that a closing call states most plainly.</li>
+     *   <li><b>{@code rate} is a magnitude; its sign is ignored.</b> The direction is already
+     *       carried by the endpoint order, so honouring both would let one call state two
+     *       contradictory directions. A non-finite rate means 0, not "keep the previous rate": the
+     *       rate here is given by this call, and running the pass at whatever rate happened to be
+     *       set last is a pass nobody asked for.</li>
+     *   <li><b>{@code rate == 0} holds the clock at {@code fromSeconds}, unfinished.</b> It never
+     *       reaches {@code toSeconds}, so {@link #isFinished()} stays false - a held part of a
+     *       transition, not a completed one.</li>
+     *   <li><b>A segment is one pass even when the clip's own {@link #looping} flag is set.</b>
+     *       The flag is deliberately <b>not</b> changed by this call: it describes the clip, and a
+     *       caller that asked for a bounded pass must not silently lose its looping setting. The
+     *       window governs while the pass is active, and the clock holds at {@code toSeconds} when
+     *       it ends.</li>
+     *   <li><b>{@code from == to} completes on the first {@link #advance}.</b> A zero-length pass is
+     *       already at its stop; the completion is reported by the step that applies it rather than
+     *       by this call, so {@code isFinished()} is false until the clock is next advanced.</li>
+     *   <li><b>Cleared by {@link #play}, {@link #setAnimation} and {@link #stop}.</b> A window is
+     *       part of the request that created it; a later "play this clip" is a different request and
+     *       must not inherit a stop point nobody chose for that clip.</li>
+     * </ul>
+     *
+     * <p>The clock is placed at {@code fromSeconds} immediately (it is a request to play, and the
+     * caller can pose it with {@code ModelInstance#update(0)} or seek inside the window before the
+     * first advance). Nothing else about the state changes: not the clip's looping flag, and not
+     * the rate's stickiness across other calls - only this call's {@code rate} is written.
+     */
+    public void playSegment(ModelAnimation animation, float fromSeconds, float toSeconds, float rate) {
+        this.animation = animation;
+        this.playing = animation != null && !animation.isEmpty();
+        this.finished = false;
+        this.paused = false;
+        this.segment = false;
+        this.time = 0.0f;
+        // Written directly rather than through setSpeed(): see the "rate is a magnitude" rule above.
+        this.speed = Float.isFinite(rate) ? Math.abs(rate) : 0.0f;
+        float duration = animation == null ? 0.0f : animation.duration();
+        if (!(duration > 0.0f)) {
+            return;
+        }
+        float from = clampInto(fromSeconds, duration);
+        float to = clampInto(toSeconds, duration);
+        this.time = from;
+        this.segmentFrom = from;
+        this.segmentStop = to;
+        this.segmentDirection = to >= from ? 1.0f : -1.0f;
+        this.segment = true;
+    }
+
+    /**
+     * Moves the clock to {@code seconds} inside the current playback without changing the rate,
+     * the looping flag or the clip.
+     *
+     * <p>Wrapping follows the playback, not the number: a looping clip wraps (so
+     * {@code seek(-0.5f)} lands at {@code duration - 0.5}, which is where a clock running backwards
+     * through zero ends up), a non-looping clip clamps to {@code [0, duration]}, and a segment
+     * clamps into its window - while a pass is active the window <i>is</i> the current playback, and
+     * a position outside it would make the next advance sweep the whole clip to reach the stop
+     * instead of finishing the part that was asked for.
+     *
+     * <h2>What a seek does to "finished"</h2>
+     * A seek is a hand-set position, so any earlier "stopped at a terminus" claim is stale unless
+     * the new position <i>is</i> the terminus the playback travels to:
+     * <ul>
+     *   <li>a non-looping clip seeked to its duration is holding at its end
+     *       ({@code finished = true}); seeked anywhere before it, it is re-armed
+     *       ({@code finished = false}, {@code playing = true}) so the next advance moves in either
+     *       direction. Without that last part a seek would be a one-way door: a finished one-shot
+     *       seeked back into the middle refuses to move backwards, because the old advance guard
+     *       reads the cut as "already at this terminus";</li>
+     *   <li>a segment seeked onto its stop is complete; seeked inside its window it is re-armed;</li>
+     *   <li>a looping clip is unaffected: its clock wraps and it never reports finished.</li>
+     * </ul>
+     *
+     * <p>A non-finite value is discarded, exactly as it is for a rate or a delta: {@code Math.min}
+     * and friends propagate NaN, and a NaN clock samples the first keyframe of every track - a model
+     * frozen in its bind pose with nothing in the log to explain it. A no-op when nothing is playing
+     * (never started, or after {@link #stop}) or when the clip has no duration to seek within.
+     */
+    public void seek(float seconds) {
+        if (animation == null || !Float.isFinite(seconds)) {
+            return;
+        }
+        float duration = animation.duration();
+        if (!(duration > 0.0f)) {
+            return;
+        }
+        float target;
+        if (segment) {
+            float low = Math.min(segmentFrom, segmentStop);
+            float high = Math.max(segmentFrom, segmentStop);
+            target = Math.min(high, Math.max(low, seconds));
+        } else if (looping) {
+            target = wrapInto(seconds, duration);
+        } else {
+            target = clampInto(seconds, duration);
+        }
+        time = target;
+        if (segment) {
+            boolean atStop = segmentDirection > 0.0f ? target >= segmentStop : target <= segmentStop;
+            finished = atStop;
+            playing = !atStop;
+        } else if (!looping) {
+            boolean atEnd = target >= duration;
+            finished = atEnd;
+            playing = !atEnd;
+        }
+    }
+
+    /**
+     * Clamps {@code seconds} into {@code [0, duration]}; a non-finite value becomes 0 rather than
+     * propagating, for the reason {@link #seek} gives.
+     */
+    private static float clampInto(float seconds, float duration) {
+        if (!Float.isFinite(seconds)) {
+            return 0.0f;
+        }
+        return Math.min(duration, Math.max(0.0f, seconds));
     }
 
     public void pause() {
@@ -215,6 +378,12 @@ public final class AnimationState {
      * caller that keeps advancing a finished clip at speed +1 does not accumulate completions.
      * A clip that was never started is also not resumed by a speed alone: {@code stop()} must stay
      * a stop, or a stale speed would restart playback on the next frame.
+     *
+     * <h2>A segment pass replaces the wrap with a stop</h2>
+     * While {@link #playSegment} has a window active, the step runs towards the window's stop and
+     * finishes there ({@code playing = false}, {@code finished = true}, the clock exactly on the
+     * stop) whatever the clip's looping flag says. The direction is the segment's, so the rate's
+     * sign is not consulted - see {@code playSegment} for why the endpoint order carries it instead.
      */
     public void advance(float deltaSeconds) {
         if (paused || animation == null) {
@@ -232,6 +401,13 @@ public final class AnimationState {
         }
         float step = Math.min(deltaSeconds, MAX_STEP_SECONDS) * speed;
         if (step == 0.0f) {
+            return;
+        }
+        if (segment) {
+            // A pass is bounded and one-way, so it is a different step function from the wrapping
+            // clock above: no wrap, no terminus at the clip's ends, and the rate contributes its
+            // magnitude only (the direction is the segment's - see playSegment).
+            advanceSegment(Math.min(deltaSeconds, MAX_STEP_SECONDS) * Math.abs(speed));
             return;
         }
         if (!playing) {
@@ -267,6 +443,38 @@ public final class AnimationState {
     }
 
     /**
+     * One step of a {@link #playSegment} pass.
+     *
+     * <p>The remaining distance is measured as {@code (stop - time) * direction}, which makes "how
+     * far is left" positive whether the pass runs up or down - one comparison for the stop instead
+     * of two mirrored ones, and one place where "have we arrived" is decided.
+     */
+    private void advanceSegment(float travel) {
+        if (!(travel > 0.0f)) {
+            return;
+        }
+        float remaining = (segmentStop - time) * segmentDirection;
+        if (!(remaining > 0.0f)) {
+            // Already at (or past) the stop. Pushing further into it stays the no-op that advancing a
+            // finished one-shot already is, so a caller that keeps stepping a completed pass neither
+            // moves the held pose nor accumulates completions.
+            playing = false;
+            finished = true;
+            return;
+        }
+        if (travel < remaining) {
+            time += segmentDirection * travel;
+            return;
+        }
+        // Land exactly on the stop rather than overshooting: the stop is a pose the caller named
+        // (the fully open lid), and a step that ran past it would sample the clip beyond it.
+        time = segmentStop;
+        playing = false;
+        finished = true;
+        completionCount++;
+    }
+
+    /**
      * Folds {@code time} into {@code [0, duration)}.
      *
      * <p>Written out rather than using {@code time % duration} alone because Java's remainder keeps
@@ -291,6 +499,7 @@ public final class AnimationState {
         playing = animation != null && !animation.isEmpty();
         paused = false;
         completionCount = 0;
+        segment = false;
     }
 
     @Override

@@ -419,7 +419,7 @@ model file.
 
 See [Driving the parts of a model](#driving-the-parts-of-a-model) for the full recipe.
 
-### 8. Play a clip backwards, or hold a pose
+### 8. Play a clip backwards, hold a pose, or run part of one
 
 A lid that opens is **one** clip, not two. To close it, run the same clip at a negative rate: the rate
 is a multiplier on the clip's own rate, it is read on every `update(dt)`, and it keeps the clip's
@@ -427,30 +427,56 @@ position - so a sign flip mid-flight reverses from where the clock currently is,
 halfway open closes from halfway open.
 
 ```java
-instance.play("lid_open", false);        // one-shot: the clock stops exactly at the duration
-instance.setPlaybackSpeed(+1.0f);        // opening
+instance.play("lid_open", false);   // one-shot: the clock stops exactly at the duration
+instance.setPlaybackSpeed(+1.0f);   // opening
 
 // once per frame, after instance.update(dt):
-if (instance.animationTime() >= instance.animationDuration()) {
-    instance.setPlaybackSpeed(0.0f);     // hold the open pose
+if (instance.hasFinished()) {
+    instance.setPlaybackSpeed(0.0f);    // hold the open pose
 }
 ```
 
-Closing is the same recipe with `-1.0f` and `animationTime() <= 0.0f`.
+Closing is the same recipe with `-1.0f`. When the transition is only *part* of a clip - gear extending
+from 1.2 s to 3.4 s of a longer clip - state the interval instead of polling for it:
+
+```java
+instance.playSegment("gear", 1.2f, 3.4f, 1.0f);   // one pass, stops at 3.4 s and holds
+instance.playSegment("gear", 3.4f, 1.2f, 1.0f);   // and this retracts it: to < from runs backwards
+```
+
+`playSegment` returns `false` when the model has no clip of that name and leaves the current playback
+untouched. Its speed is a **magnitude** (the endpoint order carries the direction), a speed of `0`
+holds at the from-endpoint with the pass unfinished, endpoints are clamped into the clip, and it is
+one pass even on a looping clip - `play()` is what loops.
 
 | | |
 |---|---|
-| `setPlaybackSpeed(speed)` | Multiplier on the clip's rate: `1` is the file's rate, `0` freezes the pose, **negative plays backwards**. Non-finite values are ignored, leaving the previous rate in force. Sticky across `play()` and `stopAnimation()` - it is a setting, not a property of the clip that happens to be loaded. |
-| `playbackSpeed()` | The current rate; `1.0` until a caller changes it. |
+| `setPlaybackSpeed(speed)` | Multiplier on the clip's rate: `1` is the file's rate, `0` freezes the pose, **negative plays backwards**. Non-finite values are ignored, leaving the previous rate in force. Sticky across `play()` and `stopAnimation()` - it is a setting, not a property of the clip that happens to be loaded. An explicit non-zero rate also releases a `pause()`. |
+| `playbackSpeed()` | The current rate; `1.0` until a caller changes it, `0.0` while paused (the hold is written as a rate of zero). |
 | `animationTime()` | Seconds into the current clip, already wrapped for a looping clip, and `0` when no clip is attached. A one-shot clip that ran to its end reports **exactly** `animationDuration()` - which is what makes "run to the end and hold" expressible at all. |
 | `animationDuration()` | The current clip's length in seconds, `0` when no clip is attached. |
+| `seek(seconds)` | Moves the clock by hand. A looping clip **wraps** (a negative seek wraps from the end, which is where a backwards-running clock would be), a one-shot **clamps** to `[0, duration]`, an active segment clamps into its window. The pose follows on the next `update` (`update(0)` resamples without moving the clock, so `seek(t); update(0)` is "jump there and draw now"), and seeking away from a terminus re-arms a finished clip. No-op when nothing is playing. |
+| `pause()` / `resume()` / `isPaused()` | Holds the pose and continues from exactly there. Written over the rate primitive - `pause()` remembers the rate and sets it to `0`, `resume()` puts it back - so there is one source of truth for "is the clock moving". The hold survives `play()`, `stopAnimation()` and `setScene()`; `resume()` or an explicit non-zero `setPlaybackSpeed` releases it. A paused clock is bit-identical frame to frame. |
+| `playSegment(name, from, to, speed)` | Plays `name` from `from` to `to` at `speed` and stops on the pose it reached, holding it. `to < from` plays the interval backwards; `speed == 0` holds at `from`, unfinished; one pass even on a looping clip. `false` when the clip does not exist, with the current playback left alone. |
+| `hasFinished()` | `true` when a non-looping playback has reached its terminus and is holding there: a one-shot that ran to its end, a segment that reached its stop, or a clip paused on a terminus. `false` while running, `false` for a looping clip (its clock wraps), `false` while paused mid-clip. This is what a consumer polls instead of comparing `animationTime()` with `animationDuration()`. |
 
-There is deliberately no "play to the end and stop" mode in the API: whether the end means *hold this
-pose* or *start the next clip* is the caller's decision, so the caller owns it. What the API does
-guarantee is that **a clock position poses identically however it was reached** - forwards or backwards
-- so reversing a clip replays exactly the poses it passed through on the way out, instead of a second
-interpolation path that could disagree. That property, the wrap at both ends and the bit-identical
-freeze at rate `0` are pinned by `ModelPlaybackSpeedTest`.
+**`update(deltaSeconds)` is in seconds**, and that is worth stating because the game's own frame delta
+is not: `Minecraft#getDeltaFrameTime()` returns **ticks** (`Timer.advanceTime` divides elapsed
+milliseconds by 50, so a 50 ms frame is `1.0`, not `0.05`). The mod's per-frame hook converts it at its
+one call site; a consumer that derives its own dt - the companion test mod's block renderer does, since
+its instance is not an entity the client's model manager advances - must divide by `20` itself, or feed
+the API about `1.0` "seconds" per frame, which the per-call step cap turns into a quarter of a second of
+clip per frame whatever the real frame time was. That failure is silent: the model animates, at a
+frame-rate-dependent rate. Measured before the fix in the mod's own hook: ~20 clip-seconds per wall
+second; after: **0.9974** (the acceptance run's clock probe, `model3d_testmod`).
+
+Whether "the end of the clip" means *hold this pose* or *start the next clip* is still the caller's
+decision, which is why the whole-clip recipe above is the caller's three lines and `playSegment` exists
+only for a bounded interval. What the API does guarantee is that **a clock position poses identically
+however it was reached** - forwards, backwards, or by `seek` - so reversing or jumping replays exactly
+the poses the clip defines instead of a second interpolation path that could disagree. That property,
+the wrap at both ends and the bit-identical freeze at rate `0` and while paused are pinned by
+`ModelPlaybackSpeedTest` and `ModelPlaybackControlTest`.
 
 ### Worked example
 

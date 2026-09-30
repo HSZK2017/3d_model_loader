@@ -33,6 +33,26 @@ public final class ClientEvents {
     }
 
     /**
+     * Ticks per second, for converting the game's frame delta into the seconds every clock in this
+     * mod is written in.
+     *
+     * <p>Named, and applied in exactly one place (the {@code advance} call below), because the two
+     * units are indistinguishable at the call site - both are a small positive float - and the
+     * failure is silent: an animation 20 times too fast still animates.
+     *
+     * <p>Verified in the mapped sources jar
+     * {@code forge-1.20.1-47.4.16_mapped_parchment_2023.09.03-1.20.1-sources.jar}:
+     * <pre>
+     *   net/minecraft/client/Timer.java:14    this.msPerTick = 1000.0F / pTicksPerSecond;
+     *   net/minecraft/client/Timer.java:19    this.tickDelta = (float)(pGameTime - this.lastMs) / this.msPerTick;
+     *   net/minecraft/client/Minecraft.java:2695    return this.timer.tickDelta;   // getDeltaFrameTime
+     * </pre>
+     * i.e. {@code getDeltaFrameTime()} is elapsed milliseconds divided by 50 (the timer is built for
+     * 20 ticks per second), so a 50 ms frame is 1.0 - not 0.05.
+     */
+    private static final float TICKS_PER_SECOND = 20.0f;
+
+    /**
      * Advances every model instance once per frame.
      *
      * <p>{@code AFTER_ENTITIES} rather than a client tick, and rather than the entity renderer call
@@ -87,10 +107,22 @@ public final class ClientEvents {
         // immediately, whereas a tick handler would have to hand the work across threads.
         installModelFolderHookOnce();
         ModelLoadService.INSTANCE.checkForChanges(true);
-        // getDeltaFrameTime is the wall-clock length of the previous frame, already smoothed by the
-        // game loop; using the partial tick instead would tie the animation speed to the camera's
-        // interpolation rather than to time.
-        ClientModelManager.get().advance(minecraft.getDeltaFrameTime());
+        // getDeltaFrameTime is the wall-clock length of the previous frame; using the partial tick
+        // instead would tie the animation speed to the camera's interpolation rather than to time.
+        //
+        // It is in TICKS and the API is in SECONDS - see TICKS_PER_SECOND above for the two vanilla
+        // lines this was verified from - so the division here is the whole conversion. Feeding the
+        // tick value straight in (what this call used to do) made every animation run about 20x too
+        // fast, which nothing noticed because a model 20x too fast still animates; the per-call step
+        // cap then turned the error into a frame-rate-dependent visible rate rather than a clean
+        // factor of 20.
+        //
+        // This is a deliberate, observable change of animation rate for every existing consumer of
+        // this mod: the documented parameter of ModelInstance#update is seconds, and after this
+        // division it finally is. It also repairs the stall guard in ClientModelManager#advance,
+        // which drops a frame whose delta exceeds 1.0 - a threshold that was 50 ms while the value
+        // was ticks, so every frame below 20 fps used to freeze the clock rather than step it.
+        ClientModelManager.get().advance(minecraft.getDeltaFrameTime() / TICKS_PER_SECOND);
         ClientModelManager.get().setLastPartialTick(event.getPartialTick());
     }
 

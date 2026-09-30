@@ -26,6 +26,7 @@ import com.model3d.loader.scene.ModelScene;
  * <pre>
  *   ModelInstance instance = new ModelInstance(scene, "su30");
  *   instance.play("fly", true);                 // by name, from the file
+ *   instance.playSegment("gear", 1.2f, 3.4f, 1.0f);  // or just part of a clip, holding at the end
  *   instance.setScale(blocksPerModelUnit);      // see ModelScale.forHandle
  *   instance.setYawOffset((float) Math.PI);     // a model authored facing -Z
  *   instance.setPivot(0.0f, -0.5f, 0.0f);       // model-space offset, in model units
@@ -40,7 +41,7 @@ import com.model3d.loader.scene.ModelScene;
  * root transform ({@code pivot}, then {@code yaw}, then {@code scale}), and a caller that only wants
  * to resize a model must not have to restate the other two.
  *
- * <h2>Reverse playback and "stop at this pose"</h2>
+ * <h2>Reverse playback, and playing a specific part of a clip</h2>
  * A clip is a curve, not a state machine: there is no {@code open()} and no {@code close()} in the
  * file, only one animation that runs from closed to open. Closing it therefore means running the
  * same clip at a negative rate, and that is all {@link #setPlaybackSpeed} does - it multiplies the
@@ -48,23 +49,36 @@ import com.model3d.loader.scene.ModelScene;
  * reverses from where the clock currently is, so a lid toggled halfway through opening closes from
  * halfway through opening.
  *
- * <p><b>The API deliberately has no "play to the end and stop" mode</b>, because whether the end
- * means "hold the open pose" or "start the next clip" is the caller's business. The recipe is three
- * lines, and it is the one the companion test mod's display block uses:
+ * <p>For a transition that is a <i>part</i> of a clip rather than the whole of it - gear that
+ * extends from 1.2 s to 3.4 s into the gear clip, a lid that opens over the first half - the
+ * primitive is {@link #playSegment(String, float, float, float)}: one call states the start, the
+ * stop and the rate, and the clock holds on the stop pose. {@link #hasFinished()} is then what a
+ * consumer polls to see that it arrived, instead of comparing {@link #animationTime()} against
+ * {@link #animationDuration()} by hand.
+ *
+ * <p>The whole-clip version of the same thing is still the caller's recipe, because whether "the
+ * end of the clip" means "hold the open pose" or "start the next clip" is the caller's business:
  * <pre>
  *   instance.play("lid_open", false);   // non-looping: the clock stops at exactly the duration
  *   instance.setPlaybackSpeed(+1.0f);   // forward, from wherever the clock is
  *
  *   // once per frame, after instance.update(dt):
- *   if (instance.animationTime() >= instance.animationDuration()) {
+ *   if (instance.hasFinished()) {
  *       instance.setPlaybackSpeed(0.0f);        // freeze on the open pose
  *   }
  * </pre>
- * Closing is the same recipe with {@code -1.0f} and {@code animationTime() <= 0.0f}. Both halves
- * rely on the two properties {@link #animationTime()} and {@link #animationDuration()} document: a
- * one-shot clip that reached its end reports exactly its duration (not 0), and a rewound clip is
- * allowed to resume from the terminus it stopped at rather than needing a fresh {@code play()} that
- * would snap it back to the start.
+ * Closing is the same recipe with {@code -1.0f}. Both halves rely on the two properties
+ * {@link #animationTime()} and {@link #animationDuration()} document: a one-shot clip that reached
+ * its end reports exactly its duration (not 0), and a rewound clip is allowed to resume from the
+ * terminus it stopped at rather than needing a fresh {@code play()} that would snap it back to the
+ * start.
+ *
+ * <p>{@link #seek(float)} sets the clock by hand, {@link #pause()} and {@link #resume()} hold the
+ * current pose and continue from it, and {@link #playSegment} is the bounded pass described above.
+ * None of the three resamples the pose themselves: {@link #update(float)} is still the only place a
+ * pose is produced (see its javadoc), so a caller that has just moved the clock and wants to draw
+ * this frame calls {@code update(0.0f)} - which resamples at the position it is already at.
+
  *
  * <h2>Driving individual parts</h2>
  * {@link #node(String)} addresses one node and holds per-node overrides - rotation, translation,
@@ -91,6 +105,16 @@ public final class ModelInstance {
      * faced +Z (Minecraft's forward) without editing the file.
      */
     private float yawOffset;
+
+    /**
+     * Playback hold: see {@link #pause()}. The rate the clock runs at while paused is 0 - that is
+     * the single source of truth for "is the clock moving" - and this flag plus
+     * {@link #speedBeforePause} are what {@link #resume()} needs to put the rate back.
+     */
+    private boolean paused;
+
+    /** The rate {@link #pause()} replaced with 0, restored by {@link #resume()}. */
+    private float speedBeforePause = 1.0f;
 
     /** Model-space offset of the pivot, in blocks, applied after scaling. */
     private float pivotX;
@@ -164,6 +188,12 @@ public final class ModelInstance {
      * dropped explicitly, because they are keyed by the old scene's material indices and would
      * otherwise tint whatever material happens to occupy that index in the new model - a nozzle
      * tint landing on a canopy reads as a rendering bug, not as a stale override.
+     *
+     * <p>A {@link #pause()} hold survives, like the rate it is written in: the new scene's clock
+     * starts at 0 with the rate still 0, and the next {@code play} holds its first frame until
+     * {@link #resume()} or an explicit non-zero {@link #setPlaybackSpeed}. That is the same rule
+     * {@code pause()} documents - nothing but those two calls releases it - and it is what keeps a
+     * model swap from silently un-freezing a consumer that paused deliberately.
      */
     public void setScene(ModelScene scene) {
         this.scene = scene;
@@ -258,14 +288,200 @@ public final class ModelInstance {
      * that opens with +1 and closes with -1 sets it once per transition and not per frame. It also
      * survives {@link #stopAnimation()}, which is deliberate - the value is a setting, not a
      * property of the clip that happened to be loaded.
+     *
+     * <p>Setting a non-zero rate <b>releases a hold</b> taken by {@link #pause()}: the rate setter is
+     * the primitive the hold is written in, so writing a rate is the caller saying "move at this
+     * rate now". Setting 0 while paused leaves the hold in force (nothing would move either way).
+     * Nothing else releases it - see {@link #pause()} for why {@code play} and {@code stopAnimation}
+     * deliberately do not.
      */
     public void setPlaybackSpeed(float speed) {
+        if (paused && Float.isFinite(speed) && speed != 0.0f) {
+            // Finite and non-zero only: AnimationState ignores a NaN or an infinity, and a write the
+            // clock ignores must not release the hold either, or a bad argument would silently
+            // un-freeze a pose the caller asked to hold - at whatever rate was remembered.
+            paused = false;
+        }
         animationState.setSpeed(speed);
     }
 
     /** The rate set by {@link #setPlaybackSpeed}; 1.0 until a caller changes it. */
     public float playbackSpeed() {
         return animationState.speed();
+    }
+
+    /**
+     * Moves the clock to {@code seconds} within the current playback, without changing the rate or
+     * the clip. A no-op when nothing is playing (never played, or after {@link #stopAnimation()}).
+     *
+     * <p>Wrapping follows the playback rather than the number, because that is the movement a
+     * continued clock would make from there:
+     * <ul>
+     *   <li>a <b>looping</b> clip wraps. {@code seek(-0.5f)} lands at
+     *       {@code duration - 0.5f} - the position a backwards-running clock reaches after crossing
+     *       zero - so seeking and playing out of the seek agree;</li>
+     *   <li>a <b>non-looping</b> clip clamps into {@code [0, duration]}. There is no wrap to
+     *       continue into: the clip has two termini and the clock stops on the nearer one;</li>
+     *   <li>inside an active {@link #playSegment} pass it clamps into the segment's window, because
+     *       while a pass is running the window <i>is</i> the current playback.</li>
+     * </ul>
+     *
+     * <p><b>The pose follows on the next {@link #update(float)}, not inside this call.</b> A seek
+     * edits the clock; {@code update} is the one place a pose is produced (every call resamples,
+     * including {@code update(0.0f)}), so seeking here and resampling there keeps one definition of
+     * "the pose is up to date" and keeps the renderer's {@link #poseGeneration()} cache honest. A
+     * caller that has moved the clock and wants to draw the result this frame calls
+     * {@code update(0.0f)}; a caller that seeks while {@link #pause() paused} can hold the new pose
+     * by doing the same, since a paused clock does not advance through it.
+     *
+     * <p>Seeking a clip that had stopped on a terminus re-arms it: the clock is inside the clip
+     * again, so a later {@code update} moves in either direction from there. {@link #hasFinished()}
+     * reports false again for a mid-clip position, and true when the seek lands on the terminus the
+     * playback runs towards (a one-shot's end, or a segment's stop).
+     *
+     * <p>A non-finite value is ignored, exactly as it is for a rate or an update delta.
+     */
+    public void seek(float seconds) {
+        animationState.seek(seconds);
+    }
+
+    /**
+     * Holds the current pose: the clock stops and {@link #resume()} continues from exactly there.
+     *
+     * <p>Written over the rate primitive on purpose - {@code pause()} remembers the current
+     * {@link #playbackSpeed()} and sets it to 0, and {@code resume()} puts it back - so there is
+     * <b>one</b> source of truth for "is the clock moving": the rate the clock is stepped by. A
+     * second freeze flag inside the clock would be a second answer to that question, and the two
+     * would disagree the first time a consumer paused and then set a rate, or set a rate and then
+     * paused; this way the disagreement cannot exist.
+     *
+     * <p>Two consequences worth stating, because both are observable:
+     * <ul>
+     *   <li>{@link #playbackSpeed()} reads {@code 0.0} while paused - that is the rate the clock is
+     *       actually running at - and {@link #resume()} restores the remembered one;</li>
+     *   <li>the hold is <b>sticky</b> across {@link #play(String, boolean)},
+     *       {@link #stopAnimation()} and {@link #setScene(ModelScene)}: the rate is documented as a
+     *       setting that {@code play} does not reset, and the hold is written in that rate, so a
+     *       paused instance that starts a new clip holds it at its first frame until
+     *       {@link #resume()} (or an explicit non-zero {@link #setPlaybackSpeed}) says otherwise. A
+     *       hold that an unrelated play could silently undo would not be a hold.</li>
+     * </ul>
+     *
+     * <p>Pausing is not "finished": {@link #hasFinished()} stays false for a clip held mid-flight.
+     * The pose is still resampled by every {@code update} call - from a clock that is not moving -
+     * so the held matrices are bit-identical frame to frame, which is the property the API's own
+     * test suite pins.
+     */
+    public void pause() {
+        if (paused) {
+            return;
+        }
+        speedBeforePause = animationState.speed();
+        paused = true;
+        animationState.setSpeed(0.0f);
+    }
+
+    /** Continues from the held position at the rate the clip had before {@link #pause()}. */
+    public void resume() {
+        if (!paused) {
+            return;
+        }
+        paused = false;
+        animationState.setSpeed(speedBeforePause);
+    }
+
+    /** True while {@link #pause()} is holding the clock; see it for what the hold survives. */
+    public boolean isPaused() {
+        return paused;
+    }
+
+    /**
+     * Plays the part of {@code animationName} between {@code fromSeconds} and {@code toSeconds} at
+     * {@code speed}, then stops on the pose it reached and holds it.
+     *
+     * <p>This is the "start and stop timing" primitive: the shape of a state transition - a lid
+     * opening, gear extending, a hatch swinging - is an interval of a clip, and one call states the
+     * interval instead of a caller polling {@link #animationTime()} every frame and stopping the
+     * clock by hand. It is one pass, always: the clock stops at {@code toSeconds} and stays there,
+     * including on a clip whose own looping flag is set ({@link #play(String, boolean)} is what
+     * loops a clip; a segment is a transition, not a loop).
+     *
+     * <h2>The edges, stated</h2>
+     * <ul>
+     *   <li><b>{@code toSeconds < fromSeconds}</b> plays the interval <b>backwards</b> and stops at
+     *       {@code toSeconds}: closing a lid is the same pass with its endpoints the other way
+     *       round, so {@code playSegment("lid", 2.0f, 0.0f, 1.0f)} closes it. The alternative
+     *       reading - swapping the endpoints and always moving forwards - would make that call
+     *       <i>open</i> the lid, and the endpoint order is the plainest way to say which way the
+     *       pass goes;</li>
+     *   <li><b>{@code speed}</b> is a magnitude (it scales the clip's own rate, so 2 is twice as
+     *       fast); its <b>sign is ignored</b>, because the direction is already carried by the
+     *       endpoint order and honouring both would let one call state two contradictory
+     *       directions. A non-finite speed means 0 rather than "keep the previous rate";</li>
+     *   <li><b>{@code speed == 0}</b> holds the clock at {@code fromSeconds} with the pass
+     *       unfinished ({@link #hasFinished()} false): a transition held part-way, not a completed
+     *       one. This is also the release valve for "start the pass but do not move yet";</li>
+     *   <li><b>endpoints outside the clip</b> are clamped into {@code [0, duration]} - the same rule
+     *       {@link #seek} applies to a one-shot. A segment is a bounded traversal, so an endpoint
+     *       past the clip's end cannot mean "wrap around and sweep the whole clip";</li>
+     *   <li><b>{@code from == to}</b> is a zero-length pass: the clock sits on the point and the
+     *       first {@code update} reports it complete;</li>
+     *   <li><b>a paused instance</b> is released by this call exactly as it is by a non-zero
+     *       {@link #setPlaybackSpeed}, except at {@code speed == 0}, which keeps the hold - see
+     *       {@link #pause()} for the one rule.</li>
+     * </ul>
+     *
+     * <p>The pose reflects the seek to {@code fromSeconds} on the next {@link #update(float)}
+     * (nothing here resamples - see {@link #seek(float)}), so a caller starting a pass and drawing
+     * in the same frame calls {@code update(0.0f)} after this.
+     *
+     * @return false when the model has no animation of that name, in which case <b>the current
+     *         playback is left exactly as it was</b> - a missing clip must not stop, rewind or
+     *         speed up whatever was already playing, or a typo in a state name would read as the
+     *         model misbehaving rather than as the name being wrong.
+     */
+    public boolean playSegment(String animationName, float fromSeconds, float toSeconds, float speed) {
+        if (scene == null || animationName == null) {
+            return false;
+        }
+        ModelAnimation animation = scene.animation(animationName);
+        if (animation == null) {
+            return false;
+        }
+        // Via setPlaybackSpeed so that the pause rule is applied in exactly one place; the rate it
+        // writes is finite (a non-finite speed becomes 0 inside AnimationState.playSegment) and so is
+        // either released-from-hold or 0.
+        float rate = Float.isFinite(speed) ? Math.abs(speed) : 0.0f;
+        setPlaybackSpeed(rate);
+        animationState.playSegment(animation, fromSeconds, toSeconds, rate);
+        return true;
+    }
+
+    /**
+     * True when a non-looping playback has reached its terminus and is holding there - the value a
+     * consumer polls instead of comparing {@link #animationTime()} against
+     * {@link #animationDuration()} itself.
+     *
+     * <p>It is the clock's own {@code finished} flag, and that is the whole mapping: the flag is set
+     * when a one-shot stops on a terminus (its end forwards, its start backwards) and when a
+     * {@link #playSegment} pass reaches its stop, and it is <b>never</b> set by a looping clip,
+     * whose clock wraps instead of stopping. So:
+     * <ul>
+     *   <li>false while a clip is running, and false for a looping clip no matter how long it has
+     *       been playing;</li>
+     *   <li>false while {@link #pause() paused} mid-clip - a held pose is not an arrived one;</li>
+     *   <li>true after a segment completes, even on a clip whose looping flag is set, because the
+     *       pass is what ended;</li>
+     *   <li>true when a clip is paused <i>on</i> its terminus: the pose is the terminus pose and the
+     *       clock is not going anywhere, so calling that "not finished" would only make the state
+     *       machine that just arrived re-run its transition.</li>
+     * </ul>
+     *
+     * <p>{@link #seek(float)} away from a terminus clears it again; {@link #play(String, boolean)}
+     * always does.
+     */
+    public boolean hasFinished() {
+        return animationState.isFinished();
     }
 
     /**
@@ -537,6 +753,14 @@ public final class ModelInstance {
      * <p>Call once per frame, per instance, from the render thread with that frame's elapsed time.
      * A static model costs almost nothing per frame; sampling a pose is never skipped, so that
      * there is exactly one definition of "the pose is up to date" (see the comment below).
+     *
+     * <p><b>{@code deltaSeconds} is in seconds</b>, and that is not a formality: Minecraft's own
+     * frame delta ({@code Minecraft#getDeltaFrameTime()}) is in <b>ticks</b> - 20 per second, so
+     * about 1.0 per frame - and feeding it here unconverted makes every animation in this mod run
+     * about 20 times too fast. The mod's own per-frame hook converts at the call site
+     * ({@code ClientEvents}, one named constant); a consumer that derives its own delta from the
+     * game must do the same. The failure was real and silent for a long time: a model 20x too fast
+     * still animates, and only a measurement against the wall clock separates it from a correct one.
      *
      * <h2>Node overrides are applied here, on top of the animation</h2>
      * Every frame the pipeline is: reset the tree to the file's rest pose, sample the active clip
